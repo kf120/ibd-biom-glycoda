@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Editor/system
+.DS_Store
+.vscode/
+
+# Extensions
+*.csv
+*.png
+
+# Private datasets
+datasets/*.xlsx
