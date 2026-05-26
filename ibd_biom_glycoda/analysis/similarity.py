@@ -215,7 +215,7 @@ def plot_beta_diversity_pca_panel(ax, pca_df, cluster_col, cluster_order, colors
     
     # Title
     if title:
-        ax.set_title(title, fontsize=14, fontweight='bold', pad=10)
+        ax.set_title(title, fontsize=13, fontweight='bold', pad=10)
     
     # Reference lines
     ax.axhline(0, linestyle='--', color='gray', lw=0.5, alpha=0.5)
