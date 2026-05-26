@@ -1,6 +1,6 @@
 # GlyCoDA - IBD-BIOM
 
-This repository contains the analysis code and notebooks used to generate the study results.
+This repository contains the analysis code and notebooks used to generate the study results in the medRxiv preprint "**A Multi-Cohort Study of Immunoglobulin G Glycans in Newly Diagnosed Inflammatory Bowel Disease Patients Reveals Accelerated Biological Aging**" (https://doi.org/10.64898/2026.04.10.26349930)
 
 ## Reproducibility (with uv)
 
