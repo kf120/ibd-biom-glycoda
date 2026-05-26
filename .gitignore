@@ -24,4 +24,4 @@ dist/
 *.png
 
 # Private datasets
-*.xlsx
+/datasets/*.xlsx
