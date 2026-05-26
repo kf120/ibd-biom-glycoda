@@ -1,6 +1,11 @@
 # GlyCoDA - IBD-BIOM
 
-This repository contains the analysis code and notebooks used to generate the study results.
+This repository contains code for multiple versions of the manuscript. To reproduce results from a specific version, check out the corresponding tag.
+
+| Version            | Tag                  | Description                                       |
+|--------------------|----------------------|---------------------------------------------------|
+| medRxiv preprint   | `v1.0-preprint`      | Code accompanying the medRxiv preprint (DOI: 10.64898/2026.04.10.26349930) |
+| Revision (current) | `dev` branch         | Active development for journal peer-review        |
 
 ## Reproducibility (with uv)
 
