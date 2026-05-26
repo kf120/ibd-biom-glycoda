@@ -56,7 +56,7 @@ def load_dataset_excel(fname, data_dir=None):
             f"Expected path: {filepath}\n"
             'Raw .xlsx datasets are intentionally not distributed with this repository.\n'
             'Data can be shared upon reasonable request.\n'
-            'Place approved files in the repository-root data/ directory.\n'
+            'Place approved files in the repository-root datasets/ directory.\n'
             f"{available_msg}\n"
             'See README.md for data access instructions.'
         )
