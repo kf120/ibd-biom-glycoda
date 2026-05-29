@@ -31,9 +31,8 @@ Then start Jupyter (or VS Code notebooks) inside the synced environment.
 
 1. `notebooks/01_similarity_analysis.ipynb`
 2. `notebooks/02_association_analysis.ipynb`
-3. `notebooks/03_glycan_age_analysis.ipynb`
-4. `notebooks/04_predictive_modeling_nonibd_ibd.ipynb`
-5. `notebooks/05_predictive_modeling_cd_uc.ipynb`
+3. `notebooks/03_predictive_modeling_nonibd_ibd.ipynb`
+4. `notebooks/04_predictive_modeling_cd_uc.ipynb`
 
 ## Repository layout (core)
 
