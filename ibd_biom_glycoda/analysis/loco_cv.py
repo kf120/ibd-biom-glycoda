@@ -13,17 +13,50 @@ from scipy.stats import t
 from sklearn.base import clone
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.utils import Bunch
+from threadpoolctl import threadpool_limits
 
 from ibd_biom_glycoda.utils import seed_everything, get_safe_index
 from ibd_biom_glycoda.data.dataset import prepare_loco_data
-from ibd_biom_glycoda.analysis.pipelines import make_estimators, run_pipeline_experiment
-from ibd_biom_glycoda.evaluation.metrics import compute_scoring_metrics, aggregate_all_metrics, summarize_scoring_metrics
+from ibd_biom_glycoda.analysis.pipelines import (
+    make_estimators,
+    preprocess_fold_data,
+    fit_pipeline_experiment,
+    create_demographic_subgroup_names,
+)
+from ibd_biom_glycoda.evaluation.metrics import compute_scoring_metrics, aggregate_all_metrics, summarize_scoring_metrics, is_lower_better
+from ibd_biom_glycoda.evaluation.subgroup_analysis import (
+    calculate_subgroup_performance,
+    calculate_intersection_performance,
+)
+
+# Splits retained for fold-level and subgroup metrics.
+LOCO_SPLITS = ('train', 'val_in', 'test_in', 'test_out')
+
+
+def safe_clone(estimator):
+    """Clone an estimator, or return it unchanged if cloning is unsupported.
+
+    The fallback reuses the same instance across folds, weakening their
+    independence, so it warns rather than failing silently.
+    """
+    if estimator is None:
+        return None
+    try:
+        return clone(estimator)
+    except Exception as exc:
+        # Not repr(estimator): BaseEstimator.__repr__ calls the same get_params()
+        # that clone() just failed on, which would mask this exception with a second.
+        warnings.warn(
+            f"safe_clone: clone() failed for a {type(estimator).__name__} instance "
+            f"({exc!r}); reusing the same instance instead of an independent clone."
+        )
+        return estimator
 
 def create_group_identifiers(V, Z_bin, age_ranges):
     """
     Create group identifiers from cohort and demographic information.
     
-    Groups are defined as the cross-product: Cohort × Age_bin × Sex
+    Groups are defined as the cross-product: Cohort x Age_bin x Sex
     
     Parameters
     ----------
@@ -44,7 +77,7 @@ def create_group_identifiers(V, Z_bin, age_ranges):
     Examples
     --------
     With 3 cohorts, 2 age bins, 2 sexes:
-    - Total groups: 3 × 2 × 2 = 12
+    - Total groups: 3 x 2 x 2 = 12
     - Group 0: Cohort_0, Age_0, Sex_0
     - Group 1: Cohort_0, Age_0, Sex_1
     - Group 2: Cohort_0, Age_1, Sex_0
@@ -561,21 +594,28 @@ def aggregate_loco_results_across_folds_per_seed(fold_results):
         Aggregated outputs keyed as in the fold results.
     """
     aggregated = {}
-    
-    # Define keys that are per-sample (concatenate across folds)
+
+    # Concatenate predictions, fold labels, and subgroup covariates.
     per_sample_keys = {
-        'train_true', 'train_pred',
-        'val_in_true', 'val_in_pred',
-        'test_in_true', 'test_in_pred',
-        'test_out_true', 'test_out_pred'
+        'train_true', 'train_pred', 'train_fold_id',
+        'val_in_true', 'val_in_pred', 'val_in_fold_id',
+        'test_in_true', 'test_in_pred', 'test_in_fold_id',
+        'test_out_true', 'test_out_pred', 'test_out_fold_id',
+        'Z_train_bin', 'V_train',
+        'Z_val_in_bin', 'V_val_in',
+        'Z_test_in_bin', 'V_test_in',
+        'Z_test_out_bin', 'V_test_out',
     }
-    
+
+    # Retain fitted objects separately for each fold.
+    per_fold_object_keys = {'model', 'processor'}
+
     for key in fold_results[0].keys():
         if key in per_sample_keys:
             # Skip None values (in case calibration is disabled)
-            arrays = [np.asarray(fold_res[key]) for fold_res in fold_results 
+            arrays = [np.asarray(fold_res[key]) for fold_res in fold_results
                      if fold_res.get(key) is not None]
-            
+
             if arrays:  # Only concatenate if we have non-None arrays
                 try:
                     aggregated[key] = np.concatenate(arrays, axis=0)
@@ -584,10 +624,12 @@ def aggregate_loco_results_across_folds_per_seed(fold_results):
                     raise e
             else:
                 aggregated[key] = None
+        elif key in per_fold_object_keys:
+            aggregated[key] = [fold_res[key] for fold_res in fold_results]
         else:
             # For constant metadata keys, just use the first fold's value
             aggregated[key] = fold_results[0][key]
-    
+
     return aggregated
 
 
@@ -658,12 +700,8 @@ def process_one_loco_run(
     # Set up K-fold cross-validation
     skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
     
-    # Instantiate models for this seed
-    all_estimators = make_estimators(
-        model_parameters, 
-        seed
-    )
-    estimators = {k: all_estimators[k] for k in model_keys}
+    # Instantiate only the selected models for this seed
+    estimators = make_estimators(model_parameters, seed, model_keys=model_keys)
     
     # Initialize results storage
     fold_results = {model_key: [] for model_key in estimators}
@@ -672,7 +710,7 @@ def process_one_loco_run(
     for fold_idx, (train_idx, val_idx) in enumerate(
             skf.split(outer.X_train, outer.y_train), start=1):
         
-        print(f"    └─ Fold {fold_idx}/{n_folds}")
+        print(f"    - Fold {fold_idx}/{n_folds}")
         
         # Create fold-specific data dictionary
         fold_data = prepare_loco_data_inner(
@@ -682,15 +720,18 @@ def process_one_loco_run(
             val_size_inner=val_size_inner
         )
         
-        # Run experiments for each model
+        # Share one independently fitted preprocessor across fold estimators.
+        prepared = preprocess_fold_data(
+            safe_clone(processor), fold_data, seed, include_covariates=include_covariates
+        )
+
+        # Fit an independent estimator for each fold.
         for model_key, estimator in estimators.items():
-            result = run_pipeline_experiment(
-                preprocessor=processor,
-                estimator=estimator,
-                data_dict=fold_data,
-                seed=seed,
-                include_covariates=include_covariates
-            )
+            result = fit_pipeline_experiment(prepared, safe_clone(estimator), seed)
+            # Retain fold membership for fold-averaged metrics.
+            for split in LOCO_SPLITS:
+                n_split = len(result[f'{split}_true'])
+                result[f'{split}_fold_id'] = np.full(n_split, fold_idx, dtype=int)
             fold_results[model_key].append(result)
     
     # Aggregate results across folds for each model
@@ -707,6 +748,79 @@ def process_one_loco_run(
     
     return cohort, seed, aggregated
 
+def validate_loco_config(
+    scaled_procs,
+    model_keys,
+    model_parameters,
+    pipeline_keys,
+    loco_test_cohorts,
+    selected_seeds,
+    verbose=True,
+):
+    """Check the estimator/preprocessor/pipeline configuration before running.
+
+    Catches config drift that would otherwise surface as silently missing
+    results downstream: a selected model with no hyperparameters, or
+    ``pipeline_keys`` left stale after ``model_keys``/``scaled_procs`` changed.
+    Pipeline keys are compared as a set, since ordering carries no meaning.
+
+    Raises
+    ------
+    ValueError
+        If any check fails, listing every problem found.
+    """
+    model_keys = list(model_keys)
+    processor_names = list(scaled_procs)
+    pipeline_keys = list(pipeline_keys)
+    problems = []
+
+    for name, values in (
+        ('model_keys', model_keys),
+        ('scaled_procs', processor_names),
+        ('pipeline_keys', pipeline_keys),
+        ('loco_test_cohorts', list(loco_test_cohorts)),
+        ('selected_seeds', list(selected_seeds)),
+    ):
+        if not values:
+            problems.append(f"{name} is empty.")
+        duplicates = sorted({v for v in values if values.count(v) > 1})
+        if duplicates:
+            problems.append(f"{name} contains duplicates: {duplicates}.")
+
+    missing_params = sorted(k for k in model_keys if k not in model_parameters)
+    if missing_params:
+        problems.append(f"model_parameters has no entry for model(s) {missing_params}.")
+
+    if model_keys and processor_names:
+        expected = {f"{m}+{p}" for p in processor_names for m in model_keys}
+        actual = set(pipeline_keys)
+        if expected != actual:
+            missing = sorted(expected - actual)
+            unexpected = sorted(actual - expected)
+            detail = []
+            if missing:
+                detail.append(f"missing {missing}")
+            if unexpected:
+                detail.append(f"unexpected {unexpected}")
+            problems.append(
+                "pipeline_keys does not match model_keys x scaled_procs ("
+                + "; ".join(detail)
+                + "). Rebuild it as [f'{m}+{p}' for p in PROCESSOR_KEYS for m in MODEL_KEYS]."
+            )
+
+    if problems:
+        raise ValueError(
+            "LOCO configuration is invalid:\n  - " + "\n  - ".join(problems)
+        )
+
+    if verbose:
+        print(
+            f" Config valid: {len(model_keys)} model(s) x {len(processor_names)} "
+            f"preprocessor(s) = {len(pipeline_keys)} pipeline(s); "
+            f"{len(list(loco_test_cohorts))} cohort(s) x {len(list(selected_seeds))} seed(s)"
+        )
+
+
 def run_loco_cv(
     df,
     feature_cols,
@@ -722,10 +836,29 @@ def run_loco_cv(
     use_full_stratification_inner_cv=True,
     use_sample_weights=True,
     include_covariates=True,
-    val_size_inner=0.10
+    val_size_inner=0.10,
+    validate=True
 ):
     """
     Run LOCO cross-validation across cohorts, seeds, and preprocessors.
+
+    The full (preprocessor, cohort, seed) task grid is flattened into a
+    single ``joblib.Parallel`` call, so it scales the same way whether
+    ``n_jobs`` is 1 (a laptop, running sequentially in-process) or however
+    many cores a cluster node/allocation provides -- ``n_jobs`` is the only
+    knob that controls parallelism.
+
+    Each task pins its own BLAS/XGBoost threading to 1 (see
+    ``threadpoolctl`` below and ``make_estimators``'s XGBoost default).
+    This is a reproducibility requirement, not just a performance one:
+    multi-threaded BLAS reductions are not guaranteed bit-identical across
+    thread counts, so without pinning, the same seed could produce subtly
+    different floating-point results depending on ``n_jobs``, machine core
+    count, or unrelated system load -- pinning to 1 thread per task makes
+    each (preprocessor, cohort, seed) result depend only on that seed,
+    regardless of how many tasks run concurrently or on what hardware. To
+    use more cores, raise ``n_jobs`` (one task per core is the natural
+    ceiling); do not rely on per-task multi-threading.
 
     Parameters
     ----------
@@ -748,9 +881,15 @@ def run_loco_cv(
     n_folds : int, default=5
         Number of inner cross-validation folds.
     n_jobs : int, default=1
-        Number of parallel jobs to run (cohort × seed tasks).
+        Number of parallel tasks (preprocessor x cohort x seed) to run.
+        1 runs sequentially in-process; set it to the number of cores
+        available, whether that's a handful on a laptop or many on a
+        cluster node.
     backend : str, default="loky"
-        Joblib backend used when running in parallel.
+        Joblib backend used when running in parallel. Any joblib-compatible
+        backend works (e.g. a cluster/distributed backend registered via
+        ``joblib.register_parallel_backend``), since only ``n_jobs`` and
+        ``backend`` are threaded through to ``Parallel``.
     use_calibration : bool, default=False
         Whether to calibrate predictions.
     use_sample_weights : bool, default=True
@@ -759,136 +898,95 @@ def run_loco_cv(
         Whether to pass covariates to the pipelines.
     val_size_inner : float, default=0.10
         Validation split proportion for the inner CV fold.
+    validate : bool, default=True
+        Check the model/preprocessor/pipeline configuration up front via
+        ``validate_loco_config`` and report the result.
 
     Returns
     -------
     dict
         Aggregated raw outputs and label collections by pipeline key.
     """
+    if validate:
+        validate_loco_config(
+            scaled_procs=scaled_procs,
+            model_keys=model_keys,
+            model_parameters=model_parameters,
+            pipeline_keys=pipeline_keys,
+            loco_test_cohorts=loco_test_cohorts,
+            selected_seeds=selected_seeds,
+        )
+
     # Initialize results storage
     raw = {
         cohort: {key: [] for key in pipeline_keys}
         for cohort in loco_test_cohorts
     }
-    
+
     labels = {
         key: {"train_true": [], "train_pred": [], "val_in_true": [], "val_in_pred": [], "test_in_true": [], "test_in_pred": [], "test_out_true": [], "test_out_pred": []}
         for key in pipeline_keys
     }
-    
-    all_results = {}
-    
-    def _safe_clone(proc):
-        if proc is None:
-            return None
-        try:
-            return clone(proc)
-        except Exception:
-            return proc
 
     def _run_one(proc_name, processor, cohort, seed):
-        processor_local = _safe_clone(processor)
-        _, _, aggregated = process_one_loco_run(
-            df=df,
-            feature_cols=feature_cols,
-            cohort=cohort,
-            seed=seed,
-            processor=processor_local,
-            model_keys=model_keys,
-            model_parameters=model_parameters,
-            n_folds=n_folds,
-            use_full_stratification_inner_cv=use_full_stratification_inner_cv,
-            use_sample_weights=use_sample_weights,
-            include_covariates=include_covariates,
-            val_size_inner=val_size_inner
-        )
+        # Limit native thread pools within each parallel task.
+        with threadpool_limits(limits=1):
+            processor_local = safe_clone(processor)
+            _, _, aggregated = process_one_loco_run(
+                df=df,
+                feature_cols=feature_cols,
+                cohort=cohort,
+                seed=seed,
+                processor=processor_local,
+                model_keys=model_keys,
+                model_parameters=model_parameters,
+                n_folds=n_folds,
+                use_full_stratification_inner_cv=use_full_stratification_inner_cv,
+                use_sample_weights=use_sample_weights,
+                include_covariates=include_covariates,
+                val_size_inner=val_size_inner
+            )
         return proc_name, cohort, seed, aggregated
 
-    # Calculate total tasks
-    total_tasks = len(loco_test_cohorts) * len(selected_seeds)
+    # Submit the full preprocessor/cohort/seed grid together.
+    tasks = [
+        (proc_name, cohort, seed)
+        for proc_name in scaled_procs
+        for cohort in loco_test_cohorts
+        for seed in selected_seeds
+    ]
     mode = "sequentially" if n_jobs == 1 else f"in parallel (n_jobs={n_jobs})"
-    print(f" Processing {total_tasks} tasks {mode} "
-          f"({len(loco_test_cohorts)} cohorts × {len(selected_seeds)} seeds)…")
-    
-    # Loop through each preprocessor
-    for proc_name, processor in scaled_procs.items():
-        print(f"\n  Running LOCO-SKF with preprocessor = {proc_name}")
-        
-        # Loop through cohorts, then seeds
-        if n_jobs == 1:
-            for cohort in loco_test_cohorts:
-                for seed in selected_seeds:
-                    print(f"\n=== Processing LOCO Test Cohort: {cohort} | seed={seed} ===")
-                    
-                    # Run single LOCO run
-                    cohort_result, seed_result, aggregated = process_one_loco_run(
-                        df=df,
-                        feature_cols=feature_cols,
-                        cohort=cohort,
-                        seed=seed,
-                        processor=processor,
-                        model_keys=model_keys,
-                        model_parameters=model_parameters,
-                        n_folds=n_folds,
-                        use_full_stratification_inner_cv=use_full_stratification_inner_cv,
-                        use_sample_weights=use_sample_weights,
-                        include_covariates=include_covariates,
-                        val_size_inner=val_size_inner
-                    )
-                    
-                    # Collect results
-                    for model_key in model_keys:
-                        flat_key = f"{model_key}+{proc_name}"
-                        collect_loco_results(
-                            aggregated[model_key],
-                            raw,
-                            cohort,
-                            flat_key,
-                            labels[flat_key]["train_true"],
-                            labels[flat_key]["train_pred"],
-                            labels[flat_key]["val_in_true"],
-                            labels[flat_key]["val_in_pred"],
-                            labels[flat_key]["test_in_true"],
-                            labels[flat_key]["test_in_pred"],
-                            labels[flat_key]["test_out_true"],
-                            labels[flat_key]["test_out_pred"],
-                        )
-                    
-                    print(f"  Done cohort={cohort}, seed={seed}")
-        else:
-            tasks = [(cohort, seed) for cohort in loco_test_cohorts for seed in selected_seeds]
-            results = Parallel(n_jobs=n_jobs, backend=backend)(
-                delayed(_run_one)(proc_name, processor, cohort, seed)
-                for cohort, seed in tasks
-            )
+    print(
+        f" Processing {len(tasks)} tasks {mode} "
+        f"({len(scaled_procs)} preprocessors x {len(loco_test_cohorts)} cohorts "
+        f"x {len(selected_seeds)} seeds)..."
+    )
 
-            for (cohort, seed), (_, _, _, aggregated) in zip(tasks, results):
-                for model_key in model_keys:
-                    flat_key = f"{model_key}+{proc_name}"
-                    collect_loco_results(
-                        aggregated[model_key],
-                        raw,
-                        cohort,
-                        flat_key,
-                        labels[flat_key]["train_true"],
-                        labels[flat_key]["train_pred"],
-                        labels[flat_key]["val_in_true"],
-                        labels[flat_key]["val_in_pred"],
-                        labels[flat_key]["test_in_true"],
-                        labels[flat_key]["test_in_pred"],
-                        labels[flat_key]["test_out_true"],
-                        labels[flat_key]["test_out_pred"],
-                    )
-                print(f"  Done cohort={cohort}, seed={seed}")
-        
-        # Store
-        all_results = {
-            'raw': raw,
-            'labels': labels
-        }
-        print(f"  Finished all cohorts & seeds for {proc_name}\n")
-    
-    return all_results
+    results = Parallel(n_jobs=n_jobs, backend=backend)(
+        delayed(_run_one)(proc_name, scaled_procs[proc_name], cohort, seed)
+        for proc_name, cohort, seed in tasks
+    )
+
+    for proc_name, cohort, seed, aggregated in results:
+        for model_key in model_keys:
+            flat_key = f"{model_key}+{proc_name}"
+            collect_loco_results(
+                aggregated[model_key],
+                raw,
+                cohort,
+                flat_key,
+                labels[flat_key]["train_true"],
+                labels[flat_key]["train_pred"],
+                labels[flat_key]["val_in_true"],
+                labels[flat_key]["val_in_pred"],
+                labels[flat_key]["test_in_true"],
+                labels[flat_key]["test_in_pred"],
+                labels[flat_key]["test_out_true"],
+                labels[flat_key]["test_out_pred"],
+            )
+        print(f"  Done preprocessor={proc_name}, cohort={cohort}, seed={seed}")
+
+    return {'raw': raw, 'labels': labels}
 
 def collect_loco_results(exp_results, results_raw, test_cohort, model_key, train_true_list, train_pred_list, val_in_true_list, val_in_pred_list, test_in_true_list, test_in_pred_list, test_out_true_list, test_out_pred_list):
     '''Collect loco results at the seed & fold level for a given model and cohort'''
@@ -902,6 +1000,108 @@ def collect_loco_results(exp_results, results_raw, test_cohort, model_key, train
     test_out_true_list.append(exp_results['test_out_true'])
     test_out_pred_list.append(exp_results['test_out_pred'])
     results_raw[test_cohort][model_key].append(exp_results)
+
+def _fold_average_metric_dicts(per_fold_dicts):
+    """Average valid per-fold metric values without weighting."""
+    if not per_fold_dicts:
+        return {}
+
+    keys = set()
+    for fold_dict in per_fold_dicts:
+        keys.update(fold_dict.keys())
+
+    averaged = {}
+    for key in keys:
+        values = [
+            fold_dict[key] for fold_dict in per_fold_dicts
+            if fold_dict.get(key) is not None and not pd.isna(fold_dict[key])
+        ]
+        if values:
+            averaged[key] = float(np.mean(values))
+    return averaged
+
+
+def compute_fold_averaged_disease_metrics(y_true, y_pred, fold_id, metrics):
+    """Compute disease-level metrics per fold, then average unweighted across folds."""
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    fold_id = np.asarray(fold_id)
+
+    per_fold = []
+    for fold in np.unique(fold_id):
+        mask = fold_id == fold
+        per_fold.append(compute_scoring_metrics(y_true[mask], y_pred[mask], metrics=metrics))
+    return _fold_average_metric_dicts(per_fold)
+
+
+def _subgroup_labels_for_var(subgroup_var, Z_bin, V):
+    """Return the per-sample group-label array for a non-intersection subgroup variable."""
+    if subgroup_var == 'age':
+        return Z_bin[:, 1]
+    if subgroup_var == 'sex':
+        return Z_bin[:, 0]
+    if subgroup_var == 'location':
+        return np.argmax(V, axis=1)
+    raise ValueError(f"Unsupported subgroup_var '{subgroup_var}' for label extraction.")
+
+
+def compute_fold_averaged_subgroup_metrics(
+    y_true, y_pred, fold_id, Z_bin, V, subgroup_var, metrics, subgroup_names
+):
+    """Average subgroup metrics across valid fold slices."""
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    fold_id = np.asarray(fold_id)
+    Z_bin = np.asarray(Z_bin)
+    V = np.asarray(V)
+    folds = np.unique(fold_id)
+
+    if subgroup_var == 'age_sex':
+        per_fold_by_group = defaultdict(lambda: defaultdict(list))
+        for fold in folds:
+            mask = fold_id == fold
+            fold_perf = calculate_intersection_performance(
+                y_true[mask], y_pred[mask],
+                Z_bin[mask, 1], Z_bin[mask, 0],
+                age_subgroup_names=subgroup_names['age'],
+                sex_subgroup_names=subgroup_names['sex'],
+                metrics=metrics,
+            )
+            for age_group, sex_dict in fold_perf.items():
+                for sex_group, group_metrics in sex_dict.items():
+                    per_fold_by_group[age_group][sex_group].append(group_metrics)
+
+        return {
+            age_group: {
+                sex_group: _fold_average_metric_dicts(fold_dicts)
+                for sex_group, fold_dicts in sex_dict.items()
+            }
+            for age_group, sex_dict in per_fold_by_group.items()
+        }
+
+    names_by_var = {
+        'age': subgroup_names['age'],
+        'sex': subgroup_names['sex'],
+        'location': subgroup_names['location'],
+    }
+    per_fold_by_group = defaultdict(list)
+    for fold in folds:
+        mask = fold_id == fold
+        labels = _subgroup_labels_for_var(subgroup_var, Z_bin[mask], V[mask])
+        fold_perf = calculate_subgroup_performance(
+            y_true[mask], y_pred[mask], labels,
+            group_name=subgroup_var,
+            subgroup_names=names_by_var.get(subgroup_var),
+            metrics=metrics,
+        )
+        for group, group_metrics in fold_perf.items():
+            per_fold_by_group[group].append(group_metrics)
+
+    return {
+        group: _fold_average_metric_dicts(fold_dicts)
+        for group, fold_dicts in per_fold_by_group.items()
+    }
+
 
 def summarize_loco_results_across_folds_and_seeds(results, variables, all_metrics, set_types, model_keys):
     """Aggregate per-cohort experimental outputs across seeds.
@@ -929,42 +1129,50 @@ def summarize_loco_results_across_folds_and_seeds(results, variables, all_metric
     metrics = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     subgroup_metrics = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
 
-    # Compute all metrics in one pass for each model
+    subgroup_vars = [v for v in variables if v != 'disease']
+
+    # Average disease and subgroup metrics across folds for each model.
     for model_key in model_keys:
         for run_index, res in enumerate(results[model_key]):
+            subgroup_names = (
+                create_demographic_subgroup_names(res['age_ranges'], res['cohort_locations'])
+                if subgroup_vars else None
+            )
+
             for set_type in set_types:
+                y_true = res[f'{set_type}_true']
+                y_pred = res[f'{set_type}_pred']
+                fold_id = res[f'{set_type}_fold_id']
+
                 # Overall analysis: disease metrics
-                disease_metrics = compute_scoring_metrics(
-                    res[f'{set_type}_true'],
-                    res[f'{set_type}_pred'],
-                    all_metrics
+                disease_metrics = compute_fold_averaged_disease_metrics(
+                    y_true, y_pred, fold_id, all_metrics
                 )
                 metrics[model_key][set_type]['disease'].append(disease_metrics)
 
-                # Subgroup analysis: aggregate subgroup metrics from the run
-                for subgroup_var in [v for v in variables if v != 'disease']:
-                    if subgroup_var in res['subgroup_metrics']:
-                        if set_type in res['subgroup_metrics'][subgroup_var]:
-                            subgroup_results = res['subgroup_metrics'][subgroup_var][set_type]
-                            if subgroup_var == 'age_sex':
-                                # For age_sex, create a nested structure: age group then sex group.
-                                for age_group, age_dict in subgroup_results.items():
-                                    # Ensure the age group key exists
-                                    if age_group not in subgroup_metrics[model_key][set_type][subgroup_var]:
-                                        subgroup_metrics[model_key][set_type][subgroup_var][age_group] = {}
-                                    for sex_group, group_metrics in age_dict.items():
-                                        # Ensure the sex group key exists for this age group
-                                        if sex_group not in subgroup_metrics[model_key][set_type][subgroup_var][age_group]:
-                                            subgroup_metrics[model_key][set_type][subgroup_var][age_group][sex_group] = []
-                                        subgroup_metrics[model_key][set_type][subgroup_var][age_group][sex_group].append(group_metrics)
-                            else:
-                                for group, group_metrics in subgroup_results.items():
-                                    subgroup_metrics[model_key][set_type][subgroup_var][group].append(group_metrics)
-                        else:
-                            print(f"Set type '{set_type}' not found in subgroup_metrics for '{subgroup_var}' in model {model_key}")
+                # Load subgroup covariates.
+                if subgroup_vars:
+                    Z_bin = res[f'Z_{set_type}_bin']
+                    V = res[f'V_{set_type}']
+
+                for subgroup_var in subgroup_vars:
+                    subgroup_results = compute_fold_averaged_subgroup_metrics(
+                        y_true, y_pred, fold_id, Z_bin, V, subgroup_var, all_metrics, subgroup_names
+                    )
+                    if subgroup_var == 'age_sex':
+                        # Nest metrics by age and sex.
+                        for age_group, age_dict in subgroup_results.items():
+                            if age_group not in subgroup_metrics[model_key][set_type][subgroup_var]:
+                                subgroup_metrics[model_key][set_type][subgroup_var][age_group] = {}
+                            for sex_group, group_metrics in age_dict.items():
+                                if sex_group not in subgroup_metrics[model_key][set_type][subgroup_var][age_group]:
+                                    subgroup_metrics[model_key][set_type][subgroup_var][age_group][sex_group] = []
+                                subgroup_metrics[model_key][set_type][subgroup_var][age_group][sex_group].append(group_metrics)
                     else:
-                        print(f"Subgroup '{subgroup_var}' not found in subgroup_metrics in model {model_key}")
-                
+                        for group, group_metrics in subgroup_results.items():
+                            subgroup_metrics[model_key][set_type][subgroup_var][group].append(group_metrics)
+
+
     final_results = {}
     subgroup_analysis_final = {}
 
@@ -989,13 +1197,12 @@ def summarize_loco_results_across_folds_and_seeds(results, variables, all_metric
                     rows.append(row)
                 final_results[set_type][var] = pd.DataFrame(rows)
 
-        # Now aggregate subgroup metrics for all subgroup variables except 'disease'
+        # Aggregate subgroup metrics.
         for subgroup_var in [v for v in variables if v != 'disease']:
             subgroup_analysis_final[set_type][subgroup_var] = {}
             # Use the first model's groups as a reference.
             ref_model = model_keys[0]
             if subgroup_var == 'age_sex':
-                # For age_sex, we expect nested structure: age → sex
                 for age_group, sex_dict in subgroup_metrics[ref_model][set_type][subgroup_var].items():
                     subgroup_analysis_final[set_type][subgroup_var][age_group] = {}
                     for sex_group in sex_dict.keys():
@@ -1016,7 +1223,10 @@ def summarize_loco_results_across_folds_and_seeds(results, variables, all_metric
                                                 'CI': model_group_agg[metric]['CI']
                                             }
                             else:
-                                print(f"Group '{age_group}-{sex_group}' not found in {model_key} for subgroup '{subgroup_var}' in set '{set_type}'.")
+                                warnings.warn(
+                                    f"Group '{age_group}-{sex_group}' not found in {model_key} "
+                                    f"for subgroup '{subgroup_var}' in set '{set_type}'."
+                                )
             else:
                 # Regular subgroup variables like age, sex, location.
                 for group in subgroup_metrics[ref_model][set_type][subgroup_var].keys():
@@ -1035,7 +1245,10 @@ def summarize_loco_results_across_folds_and_seeds(results, variables, all_metric
                                         'CI': model_group_agg[metric]['CI']
                                     }
                         else:
-                            print(f"Group '{group}' not found in {model_key} for subgroup '{subgroup_var}' in set '{set_type}'.")
+                            warnings.warn(
+                                f"Group '{group}' not found in {model_key} for subgroup "
+                                f"'{subgroup_var}' in set '{set_type}'."
+                            )
             
     return final_results, subgroup_analysis_final
 
@@ -1267,7 +1480,7 @@ def compute_pooled_stats(
 
     if i2_value >= 75:
         warnings.warn(
-            f"High heterogeneity detected (I²={i2_value:.1f}%). "
+            f"High heterogeneity detected (I^2={i2_value:.1f}%). "
             f"Using {pooling_method}. "
             "Interpret pooled estimates with caution - results vary substantially across cohorts."
         )
@@ -1378,10 +1591,9 @@ def _compute_worst_cohort(metric, cohort_means):
     """Return worst-performing cohort name for a metric."""
     if not cohort_means:
         return None
-    higher_is_better = metric in {"AUROC", "Sensitivity", "Specificity"}
-    if higher_is_better:
-        return min(cohort_means, key=lambda x: x[1])[0]
-    return max(cohort_means, key=lambda x: x[1])[0]
+    if is_lower_better(metric):
+        return max(cohort_means, key=lambda x: x[1])[0]
+    return min(cohort_means, key=lambda x: x[1])[0]
 
 
 def _round_summary_frame(df):
@@ -1631,7 +1843,7 @@ def summarize_loco_results_all(
     ci_level : float, default=0.95
         Confidence level for intervals
     use_random_effects_threshold : float, default=50.0
-        I² threshold above which to use random-effects pooling
+        I^2 threshold above which to use random-effects pooling
 
     Returns
     -------

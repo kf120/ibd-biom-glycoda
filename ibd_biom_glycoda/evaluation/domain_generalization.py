@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 
 from matplotlib.lines import Line2D
 
+from ibd_biom_glycoda.evaluation.metrics import is_lower_better
 from ibd_biom_glycoda.plotting.style import create_model_colors
 
 
@@ -410,6 +411,10 @@ def run_full_generalization_gap_analysis_overall(
     model_keys : list of str
         Model identifiers to filter on (e.g. ['LR', 'XB']). Each entry is passed as
         `filter_value` to `prepare_generalization_data_overall`.
+    sets : sequence of str, default ('test_in', 'test_out')
+        Evaluation splits to compare. Note that 'val_in' is XGBoost's early-stopping
+        `eval_set` but a clean holdout for LR, so a 'val_in' gap is not the same
+        quantity across models and should not be compared between them directly.
     group_by : str, default 'Preprocessor'
         Column used to group models in `prepare_generalization_data_overall`.
 
@@ -611,16 +616,6 @@ def plot_generalization_gaps_overall(
 
     metric_x, metric_y = metric_names
 
-    lower_is_better_keywords = {
-        'ece', 'logloss', 'loss', 'brier', 'mce', 'mcr', 'fpr', 'fnr',
-        'uncertainty', 'error', 'nll', 'rmse', 'mae', 'mse', 'calibration',
-        'misclassification', 'reliability'
-    }
-
-    def _is_lower_better(metric_name):
-        name_norm = metric_name.lower().replace('_', ' ')
-        return any(keyword in name_norm for keyword in lower_is_better_keywords)
-
     def _compute_gap(reference, comparison, low_is_better, fold_change):
         if reference is None or comparison is None:
             return np.nan
@@ -642,8 +637,8 @@ def plot_generalization_gaps_overall(
     # Store gaps by method for computing averages
     method_gaps = {method: {'x': [], 'y': []} for method in methods}
 
-    x_lower_better = _is_lower_better(metric_x)
-    y_lower_better = _is_lower_better(metric_y)
+    x_lower_better = is_lower_better(metric_x)
+    y_lower_better = is_lower_better(metric_y)
     
     # Process each method/model
     for method_idx, method in enumerate(methods):
@@ -1259,8 +1254,11 @@ def plot_between_test_cohort_metrics_overall(
     df_models = []
     missing_models = []
     model_series = df_set['Model'].astype(str)
+    # Match the parsed estimator exactly; substring matching on the raw label
+    # would make 'LR' match 'XB+CLR'.
+    estimator_series = model_series.apply(lambda s: parse_pipeline(s)[1])
     for target in model_names:
-        mask = model_series.str.contains(target, case=False, na=False, regex=False)
+        mask = estimator_series == target
         if not mask.any():
             missing_models.append(target)
             continue

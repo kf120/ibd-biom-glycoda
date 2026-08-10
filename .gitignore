@@ -25,3 +25,6 @@ dist/
 
 # Private datasets
 /datasets/*.xlsx
+
+# Local verification artifacts
+/snapshots/

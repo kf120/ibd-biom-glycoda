@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-from ibd_biom_glycoda.evaluation.metrics import compute_scoring_metrics
+from ibd_biom_glycoda.evaluation.metrics import compute_scoring_metrics, is_lower_better
 from ibd_biom_glycoda.evaluation.domain_generalization import parse_pipeline, _resolve_metric_axis_config, plot_between_test_cohort_metrics_from_summary
 
 def create_subgroup_metrics_dict(
@@ -74,7 +74,7 @@ def create_subgroup_metrics_dict(
 
 
 
-def calculate_subgroup_performance(true_labels, pred_proba_labels, subgroup_labels, group_name=None, subgroup_names=None, metrics=['AUROC', 'ECE', 'LogLoss', 'Brier', 'Resolution Ratio', 'Reliability']):
+def calculate_subgroup_performance(true_labels, pred_proba_labels, subgroup_labels, group_name=None, subgroup_names=None, metrics=['AUROC', 'ECE', 'LogLoss', 'Brier', 'Resolution Ratio', 'Reliability', 'Sensitivity', 'Specificity']):
     """
     Calculate and return metrics for each subgroup with interpretable subgroup names.
     
@@ -120,8 +120,8 @@ def calculate_subgroup_performance(true_labels, pred_proba_labels, subgroup_labe
     
     return performance_dict
 
-def calculate_intersection_performance(true_labels, pred_proba_labels, age_labels, sex_labels, 
-                                       age_subgroup_names=None, sex_subgroup_names=None, metrics=['AUROC', 'ECE', 'LogLoss', 'Brier', 'Resolution Ratio', 'Reliability']):
+def calculate_intersection_performance(true_labels, pred_proba_labels, age_labels, sex_labels,
+                                       age_subgroup_names=None, sex_subgroup_names=None, metrics=['AUROC', 'ECE', 'LogLoss', 'Brier', 'Resolution Ratio', 'Reliability', 'Sensitivity', 'Specificity']):
     """
     Compute performance metrics for the intersection of age and sex subgroups.
     
@@ -665,16 +665,6 @@ def plot_generalization_gaps_subgroups(
 
     metric_x, metric_y = metric_names
 
-    lower_is_better_keywords = {
-        'ece', 'logloss', 'loss', 'brier', 'mce', 'mcr', 'fpr', 'fnr',
-        'uncertainty', 'error', 'nll', 'rmse', 'mae', 'mse', 'calibration',
-        'misclassification', 'reliability'
-    }
-
-    def _is_lower_better(metric_name):
-        name_norm = metric_name.lower().replace('_', ' ')
-        return any(keyword in name_norm for keyword in lower_is_better_keywords)
-
     def _compute_gap(reference, comparison, low_is_better, fold_change):
         if reference is None or comparison is None:
             return np.nan
@@ -718,8 +708,8 @@ def plot_generalization_gaps_subgroups(
     all_x_gaps = []
     all_y_gaps = []
 
-    x_lower_better = _is_lower_better(metric_x)
-    y_lower_better = _is_lower_better(metric_y)
+    x_lower_better = is_lower_better(metric_x)
+    y_lower_better = is_lower_better(metric_y)
     
     # Process each method/model
     for method_idx, method in enumerate(methods):
@@ -1024,8 +1014,12 @@ def plot_between_test_cohort_metrics_subgroup(
 
     summary_rows = []
 
+    # Match the parsed estimator exactly; substring matching on the raw label
+    # would make 'LR' match 'XB+CLR'.
+    estimator_series = df_group['Model'].apply(lambda s: parse_pipeline(s)[1])
+
     for model_key in model_names:
-        mask = df_group['Model'].str.contains(model_key, case=False, na=False, regex=False)
+        mask = estimator_series == model_key
         df_model = df_group.loc[mask].copy()
         if df_model.empty:
             raise ValueError(

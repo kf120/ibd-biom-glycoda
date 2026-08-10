@@ -2,6 +2,8 @@
 """
 @author: Konstantinos Flevaris
 """
+import warnings
+
 import numpy as np
 from scipy.stats import t, sem
 from sklearn.metrics import roc_auc_score, average_precision_score, log_loss, brier_score_loss, matthews_corrcoef, balanced_accuracy_score
@@ -65,23 +67,25 @@ def compute_ece(y_true, y_proba, n_bins):
 
 def compute_brier_score_decomposition(y_true, y_proba):
     """Return Brier score decomposition terms."""
+    y_true = np.asarray(y_true, dtype=float)
+    y_proba = np.asarray(y_proba, dtype=float)
+
     brier = brier_score_loss(y_true, y_proba)
     base_rate = np.mean(y_true)
     uncertainty = base_rate * (1 - base_rate)
+    n = len(y_true)
 
-    unique_preds = np.unique(y_proba)
-    reliability = 0.0
-    resolution = 0.0
+    # Aggregate samples with identical predicted probabilities.
+    unique_preds, inverse, counts = np.unique(
+        y_proba, return_inverse=True, return_counts=True
+    )
+    inverse = inverse.ravel()
+    sum_true_per_bin = np.bincount(inverse, weights=y_true, minlength=len(unique_preds))
+    observed_freq = sum_true_per_bin / counts
+    weights = counts / n
 
-    for pred_val in unique_preds:
-        mask = y_proba == pred_val
-        n_k = np.sum(mask)
-        if n_k == 0:
-            continue
-
-        observed_freq = np.mean(y_true[mask])
-        reliability += (n_k / len(y_true)) * (pred_val - observed_freq) ** 2
-        resolution += (n_k / len(y_true)) * (observed_freq - base_rate) ** 2
+    reliability = np.sum(weights * (unique_preds - observed_freq) ** 2)
+    resolution = np.sum(weights * (observed_freq - base_rate) ** 2)
 
     resolution_ratio = resolution / uncertainty if uncertainty > 0 else np.nan
     decomposition_check = uncertainty - resolution + reliability
@@ -118,12 +122,16 @@ def compute_calibration_metrics(y_true, y_proba, n_bins=10):
     
     # Handle edge case: if all predictions are the same
     if len(np.unique(y_proba)) == 1:
+        base_rate = np.mean(y_true)
+        uncertainty = base_rate * (1 - base_rate)
+        resolution = 0.0
         return {
             'ece': 0.0,
             'brier': brier_score_loss(y_true, y_proba),
             'reliability': 0.0,
-            'resolution': 0.0,
-            'uncertainty': np.mean(y_true) * (1 - np.mean(y_true))
+            'resolution': resolution,
+            'uncertainty': uncertainty,
+            'resolution_ratio': (resolution / uncertainty) if uncertainty > 0 else np.nan,
         }
     
     ece = compute_ece(y_true, y_proba, n_bins)
@@ -220,8 +228,41 @@ def compute_macro_avg_metrics(y_true, y_pred, n_classes):
     macro_metrics = {key: metrics_sum[key] / n_present for key in metrics_sum}
     return macro_metrics
 
+CALIBRATION_METRIC_NAMES = frozenset(
+    {'ECE', 'Reliability', 'Resolution', 'Uncertainty', 'Resolution Ratio'}
+)
+THRESHOLD_METRIC_NAMES = frozenset(
+    {'MCC', 'BAcc', 'Sensitivity', 'Precision', 'Specificity', 'FPR', 'FNR', 'MCR'}
+)
+ALL_METRIC_NAMES = (
+    frozenset({'AUROC', 'AUPRC', 'LogLoss', 'Brier'})
+    | CALIBRATION_METRIC_NAMES
+    | THRESHOLD_METRIC_NAMES
+)
+
+LOWER_IS_BETTER_KEYWORDS = frozenset({
+    'ece', 'logloss', 'loss', 'brier', 'mce', 'mcr', 'fpr', 'fnr',
+    'uncertainty', 'error', 'nll', 'rmse', 'mae', 'mse', 'calibration',
+    'misclassification', 'reliability'
+})
+
+
+def is_lower_better(metric_name):
+    """Return True if lower values of ``metric_name`` indicate better performance.
+
+    Shared by the generalization-gap plots and the LOCO worst-cohort summary so
+    new metrics get a consistent direction in both.
+    """
+    name_norm = metric_name.lower().replace('_', ' ')
+    return any(keyword in name_norm for keyword in LOWER_IS_BETTER_KEYWORDS)
+
+
 def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=None):
     """Compute discrimination, calibration, and threshold metrics.
+
+    Only the metric families needed to satisfy ``metrics`` are computed;
+    requesting a small subset skips the unrequested families entirely
+    rather than computing everything and filtering afterwards.
 
     Parameters
     ----------
@@ -241,11 +282,19 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
     """
     y_true = np.array(y_true)
     y_pred_proba = np.array(y_pred_proba)
-    
+
+    requested = set(metrics) if metrics is not None else set(ALL_METRIC_NAMES)
+    need_auroc = 'AUROC' in requested
+    need_auprc = 'AUPRC' in requested
+    need_logloss = 'LogLoss' in requested
+    need_brier = 'Brier' in requested
+    need_calibration = bool(requested & CALIBRATION_METRIC_NAMES)
+    need_threshold = bool(requested & THRESHOLD_METRIC_NAMES)
+
     # Get unique classes in test set
     test_classes = np.unique(y_true)
     n_test_classes = len(test_classes)
-    
+
     # Infer model classes if not provided
     if model_classes is None:
         n_model_classes = y_pred_proba.shape[1] if y_pred_proba.ndim > 1 else 2
@@ -253,79 +302,87 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
     else:
         model_classes = np.array(model_classes)
         n_model_classes = len(model_classes)
-    
+
     # Check if all test classes are in model classes
     if not np.all(np.isin(test_classes, model_classes)):
         raise ValueError(
             f"Test set contains classes {test_classes} not present in "
             f"model classes {model_classes}"
         )
-    
-    # Initialize variables
-    ece = None
-    reliability = None
-    resolution = None
-    uncertainty = None
-    
+
+    auroc = auprc = log_loss_value = brier_score = None
+    ece = reliability = resolution = uncertainty = resolution_ratio = None
+    tpr = precision = tnr = fpr = fnr = misclassification_rate = mcc = bacc = None
+
     if n_test_classes > 2 or n_model_classes > 2:
         # Multiclass case
-        
+
         # Align predictions with test classes
         class_indices = np.array([np.where(model_classes == c)[0][0] for c in test_classes])
         y_pred_proba_aligned = y_pred_proba[:, class_indices]
-        
+
         # Renormalize probabilities
         y_pred_proba_aligned = y_pred_proba_aligned / y_pred_proba_aligned.sum(axis=1, keepdims=True)
-        
-        # Binarize true labels using test classes
-        y_true_bin = label_binarize(y_true, classes=test_classes)
-        
-        # Handle case where only two classes appear in the test set while the model is multiclass
-        if n_test_classes == 2 and y_true_bin.shape[1] == 1:
-            y_true_bin = np.hstack([1 - y_true_bin, y_true_bin])
-        
-        # Compute non-threshold-based metrics
-        auroc = roc_auc_score(y_true_bin, y_pred_proba_aligned, multi_class='ovr', average='macro')
-        auprc = average_precision_score(y_true_bin, y_pred_proba_aligned, average='macro')
-        log_loss_value = log_loss(y_true, y_pred_proba_aligned)
-        brier_score = np.mean(np.sum((y_true_bin - y_pred_proba_aligned) ** 2, axis=1))
 
-        # Compute calibration metrics (OVR macro-averaging)
-        ece_list = []
-        reliability_list = []
-        resolution_list = []
-        uncertainty_list = []
-        
-        for class_idx, class_label in enumerate(test_classes):
-            # One-vs-Rest: binary problem for this class
-            y_true_binary = (y_true == class_label).astype(int)
-            y_proba_class = y_pred_proba_aligned[:, class_idx]
-            
-            cal_metrics = compute_calibration_metrics(y_true_binary, y_proba_class)
-            ece_list.append(cal_metrics['ece'])
-            reliability_list.append(cal_metrics['reliability'])
-            resolution_list.append(cal_metrics['resolution'])
-            uncertainty_list.append(cal_metrics['uncertainty'])
-        
-        # Macro-average calibration metrics
-        ece = np.mean(ece_list)
-        reliability = np.mean(reliability_list)
-        resolution = np.mean(resolution_list)
-        uncertainty = np.mean(uncertainty_list)
+        # y_true_bin is shared by AUROC, AUPRC, and Brier
+        if need_auroc or need_auprc or need_brier:
+            y_true_bin = label_binarize(y_true, classes=test_classes)
 
-        # Compute threshold-based metrics using OVR macro-averaging
-        y_pred = test_classes[np.argmax(y_pred_proba_aligned, axis=1)]
-        
-        macro_avg_metrics = compute_macro_avg_metrics(y_true, y_pred, n_test_classes)
-        
-        tpr = macro_avg_metrics['Sensitivity']
-        precision = macro_avg_metrics['Precision']
-        tnr = macro_avg_metrics['Specificity']
-        fpr = macro_avg_metrics['FPR']
-        fnr = macro_avg_metrics['FNR']
-        misclassification_rate = macro_avg_metrics['MCR']
-        mcc = macro_avg_metrics['MCC']
-        bacc = balanced_accuracy_score(y_true, y_pred)
+            # Expand binary labels to match multiclass probability columns.
+            if n_test_classes == 2 and y_true_bin.shape[1] == 1:
+                y_true_bin = np.hstack([1 - y_true_bin, y_true_bin])
+
+            if need_auroc:
+                auroc = roc_auc_score(y_true_bin, y_pred_proba_aligned, multi_class='ovr', average='macro')
+            if need_auprc:
+                auprc = average_precision_score(y_true_bin, y_pred_proba_aligned, average='macro')
+            if need_brier:
+                brier_score = np.mean(np.sum((y_true_bin - y_pred_proba_aligned) ** 2, axis=1))
+
+        if need_logloss:
+            log_loss_value = log_loss(y_true, y_pred_proba_aligned)
+
+        if need_calibration:
+            # Compute calibration metrics (OVR macro-averaging)
+            ece_list = []
+            reliability_list = []
+            resolution_list = []
+            uncertainty_list = []
+            resolution_ratio_list = []
+
+            for class_idx, class_label in enumerate(test_classes):
+                # One-vs-Rest: binary problem for this class
+                y_true_binary = (y_true == class_label).astype(int)
+                y_proba_class = y_pred_proba_aligned[:, class_idx]
+
+                cal_metrics = compute_calibration_metrics(y_true_binary, y_proba_class)
+                ece_list.append(cal_metrics['ece'])
+                reliability_list.append(cal_metrics['reliability'])
+                resolution_list.append(cal_metrics['resolution'])
+                uncertainty_list.append(cal_metrics['uncertainty'])
+                resolution_ratio_list.append(cal_metrics['resolution_ratio'])
+
+            # Macro-average calibration metrics
+            ece = np.mean(ece_list)
+            reliability = np.mean(reliability_list)
+            resolution = np.mean(resolution_list)
+            uncertainty = np.mean(uncertainty_list)
+            resolution_ratio = np.nanmean(resolution_ratio_list)
+
+        if need_threshold:
+            # Compute threshold-based metrics using OVR macro-averaging
+            y_pred = test_classes[np.argmax(y_pred_proba_aligned, axis=1)]
+
+            macro_avg_metrics = compute_macro_avg_metrics(y_true, y_pred, n_test_classes)
+
+            tpr = macro_avg_metrics['Recall (TPR)']
+            precision = macro_avg_metrics['Precision']
+            tnr = macro_avg_metrics['TNR (Specificity)']
+            fpr = macro_avg_metrics['FPR (1 - Specificity)']
+            fnr = macro_avg_metrics['FNR (1 - TPR)']
+            misclassification_rate = macro_avg_metrics['MCR']
+            mcc = macro_avg_metrics['MCC']
+            bacc = balanced_accuracy_score(y_true, y_pred)
 
     else:
         # Binary case
@@ -333,71 +390,89 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
             y_pred_proba_aligned = y_pred_proba.ravel()
         else:
             y_pred_proba_aligned = y_pred_proba[:, 1]
-        
-        # Compute non-threshold-based metrics
-        auroc = roc_auc_score(y_true, y_pred_proba_aligned)
-        auprc = average_precision_score(y_true, y_pred_proba_aligned)
-        log_loss_value = log_loss(y_true, y_pred_proba_aligned)
-        brier_score = brier_score_loss(y_true, y_pred_proba_aligned)
 
-        # Compute calibration metrics for binary case
-        cal_metrics = compute_calibration_metrics(y_true, y_pred_proba_aligned)
-        ece = cal_metrics['ece']
-        reliability = cal_metrics['reliability']
-        resolution = cal_metrics['resolution']
-        uncertainty = cal_metrics['uncertainty']
+        if need_auroc:
+            auroc = roc_auc_score(y_true, y_pred_proba_aligned)
+        if need_auprc:
+            auprc = average_precision_score(y_true, y_pred_proba_aligned)
+        if need_logloss:
+            log_loss_value = log_loss(y_true, y_pred_proba_aligned)
+        if need_brier:
+            brier_score = brier_score_loss(y_true, y_pred_proba_aligned)
 
-    # Compute threshold-based metrics using the conventional half threshold
-        y_pred = (y_pred_proba_aligned > 0.5).astype(int)
-        
-        # Confusion matrix elements
-        tp = np.sum((y_true == 1) & (y_pred == 1))
-        tn = np.sum((y_true == 0) & (y_pred == 0))
-        fp = np.sum((y_true == 0) & (y_pred == 1))
-        fn = np.sum((y_true == 1) & (y_pred == 0))
-        
-        # Compute threshold-based metrics
-        tpr = tp / (tp + fn) if (tp + fn) > 0 else 0
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-        tnr = tn / (tn + fp) if (tn + fp) > 0 else 0
-        fpr = fp / (fp + tn) if (fp + tn) > 0 else 0
-        fnr = fn / (fn + tp) if (fn + tp) > 0 else 0
-        misclassification_rate = (fp + fn) / len(y_true)
-        
-        mcc = matthews_corrcoef(y_true, y_pred)
-        bacc = balanced_accuracy_score(y_true, y_pred)
+        if need_calibration:
+            cal_metrics = compute_calibration_metrics(y_true, y_pred_proba_aligned)
+            ece = cal_metrics['ece']
+            reliability = cal_metrics['reliability']
+            resolution = cal_metrics['resolution']
+            uncertainty = cal_metrics['uncertainty']
+            resolution_ratio = cal_metrics['resolution_ratio']
 
-    # Compile results
-    all_results = {
-        'AUROC': auroc,
-        'AUPRC': auprc,
-        'LogLoss': log_loss_value,
-        'Brier': brier_score,
-        'MCC': mcc,
-        'BAcc': bacc,
-        'ECE': ece,
-        'Reliability': reliability,
-        'Resolution': resolution,
-        'Uncertainty': uncertainty,
-        'Sensitivity': tpr,
-        'Precision': precision,
-        'Specificity': tnr,
-        'FPR': fpr,
-        'FNR': fnr,
-        'MCR': misclassification_rate,
-    }
+        if need_threshold:
+            # Compute threshold-based metrics using the conventional half threshold
+            y_pred = (y_pred_proba_aligned > 0.5).astype(int)
+
+            # Confusion matrix elements
+            tp = np.sum((y_true == 1) & (y_pred == 1))
+            tn = np.sum((y_true == 0) & (y_pred == 0))
+            fp = np.sum((y_true == 0) & (y_pred == 1))
+            fn = np.sum((y_true == 1) & (y_pred == 0))
+
+            # Compute threshold-based metrics
+            tpr = tp / (tp + fn) if (tp + fn) > 0 else 0
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+            tnr = tn / (tn + fp) if (tn + fp) > 0 else 0
+            fpr = fp / (fp + tn) if (fp + tn) > 0 else 0
+            fnr = fn / (fn + tp) if (fn + tp) > 0 else 0
+            misclassification_rate = (fp + fn) / len(y_true)
+
+            mcc = matthews_corrcoef(y_true, y_pred)
+            bacc = balanced_accuracy_score(y_true, y_pred)
+
+    # Compile only the families actually computed
+    all_results = {}
+    if need_auroc:
+        all_results['AUROC'] = auroc
+    if need_auprc:
+        all_results['AUPRC'] = auprc
+    if need_logloss:
+        all_results['LogLoss'] = log_loss_value
+    if need_brier:
+        all_results['Brier'] = brier_score
+    if need_calibration:
+        all_results['ECE'] = ece
+        all_results['Reliability'] = reliability
+        all_results['Resolution'] = resolution
+        all_results['Uncertainty'] = uncertainty
+        all_results['Resolution Ratio'] = resolution_ratio
+    if need_threshold:
+        all_results['MCC'] = mcc
+        all_results['BAcc'] = bacc
+        all_results['Sensitivity'] = tpr
+        all_results['Precision'] = precision
+        all_results['Specificity'] = tnr
+        all_results['FPR'] = fpr
+        all_results['FNR'] = fnr
+        all_results['MCR'] = misclassification_rate
 
     if metrics is not None:
         results = {metric: all_results[metric] for metric in metrics if metric in all_results}
     else:
         results = all_results
-        
+
     return results
 
 
 def summarize_scoring_metrics(metrics_list):
     """
-    Aggregate values of metrics across multiple seeds and round to 3 decimal points.
+    Aggregate values of metrics across multiple seeds.
+
+    Mean and CI are rounded for display; SEM is kept at full precision because
+    ``compute_pooled_stats`` uses it as an inverse-variance weight and skips
+    ``SEM <= 0``, so a rounded-to-zero SEM would drop that group from the pool.
+
+    Metrics are taken as the union across seeds; one present in only some seeds
+    is summarized over those seeds with a warning.
 
     Parameters:
     -----------
@@ -407,16 +482,30 @@ def summarize_scoring_metrics(metrics_list):
     Returns:
     --------
     dict
-        Dictionary containing mean and 95% CI for each metric, rounded to 3 decimal points.
+        Dictionary containing mean, full-precision SEM, and 95% CI for each metric.
     """
+    if not metrics_list:
+        return {}
+
+    all_metric_names = set()
+    for metric_dict in metrics_list:
+        all_metric_names.update(metric_dict.keys())
+
     summarized = {}
-    for metric in metrics_list[0].keys():
-        values = [m[metric] for m in metrics_list]
+    for metric in sorted(all_metric_names):
+        values = [m[metric] for m in metrics_list if metric in m]
+        if len(values) != len(metrics_list):
+            warnings.warn(
+                f"Metric '{metric}' is present in only {len(values)}/{len(metrics_list)} "
+                "seed(s); summarizing over the seeds where it is available. Its SEM/CI "
+                "may not be directly comparable to metrics computed from the full seed count."
+            )
         mean = np.mean(values)
-        ci = t.interval(0.95, len(values)-1, loc=mean, scale=sem(values))
+        metric_sem = sem(values)
+        ci = t.interval(0.95, len(values)-1, loc=mean, scale=metric_sem)
         summarized[metric] = {
             'Mean': round(mean, 3),
-            'SEM': round(sem(values), 3),
+            'SEM': float(metric_sem),
             'CI': (round(ci[0], 3), round(ci[1], 3))
         }
     return summarized
@@ -456,5 +545,9 @@ def aggregate_all_metrics(metrics, model_keys, set_type, var, all_metrics):
                         'CI': model_agg[metric]['CI']
                     }
         else:
-            print(f"Variable '{var}' not found for model '{model_key}' in set '{set_type}'.")
+            warnings.warn(
+                f"Variable '{var}' not found for model '{model_key}' in set '{set_type}'. "
+                "This model produced no results for this split -- check for a stale "
+                "PIPELINE_KEYS/MODEL_KEYS mismatch."
+            )
     return aggregated_results

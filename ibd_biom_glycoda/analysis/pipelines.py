@@ -10,8 +10,7 @@ from xgboost import XGBClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
 
-from ibd_biom_glycoda.utils.helpers import seed_everything, safe_column_access
-from ibd_biom_glycoda.evaluation.subgroup_analysis import create_subgroup_metrics_dict
+from ibd_biom_glycoda.utils.helpers import seed_everything
 
 
 def combine_features_with_covariates(X, Z):
@@ -97,48 +96,34 @@ def build_results_dict(estimator, preprocessor, data, predictions, metadata):
     return {
         'model': estimator,
         'processor': preprocessor,
-        'train_true': np.array(data['train']['y']),
 
         # Training predictions
         'train_true': np.array(data['train']['y']),
         'train_pred': np.array(predictions['train']),
-        
+
         # Validation predictions
         'val_in_true': np.array(data['val_in']['y']),
         'val_in_pred': np.array(predictions['val_in']),
-        
+
         # Test predictions
         'test_in_true': np.array(data['test_in']['y']),
         'test_in_pred': np.array(predictions['test_in']),
         'test_out_true': np.array(data['test_out']['y']),
         'test_out_pred': np.array(predictions['test_out']),
-        
-        # Training data
-        'X_train': data['train']['X'],
-        'Z_train': data['train']['Z'],
+
+        # Binned covariates, needed for post-hoc subgroup metrics
         'Z_train_bin': data['train']['Z_bin'],
         'V_train': data['train']['V'],
-        
-        # Validation data
-        'X_val_in': data['val_in']['X'],
-        'Z_val_in': data['val_in']['Z'],
         'Z_val_in_bin': data['val_in']['Z_bin'],
         'V_val_in': data['val_in']['V'],
-        
-        # Test data
-        'X_test_in': data['test_in']['X'],
-        'Z_test_in': data['test_in']['Z'],
+        'Z_test_in_bin': data['test_in']['Z_bin'],
         'V_test_in': data['test_in']['V'],
-        'X_test_out': data['test_out']['X'],
-        'Z_test_out': data['test_out']['Z'],
+        'Z_test_out_bin': data['test_out']['Z_bin'],
         'V_test_out': data['test_out']['V'],
-        
+
         # Metadata
         'age_ranges': metadata['age_ranges'],
         'cohort_locations': metadata['cohort_locations'],
-        'num_locations': data['train']['V'].shape[1],
-        'num_age_bins': len(np.unique(safe_column_access(data['train']['Z'], 1))),
-        'subgroup_metrics': None  # Will be populated later
     }
 
 def unpack_train_data(data_dict):
@@ -326,9 +311,139 @@ def fit_and_predict(estimator, X_train, y_train, X_val_in, y_val_in, X_test_in, 
     return predictions
 
 
+def preprocess_fold_data(preprocessor, data_dict, seed, include_covariates=True):
+    """
+    Preprocess one fold for reuse across estimators.
+
+    Parameters
+    ----------
+    preprocessor : transformer
+        Preprocessing pipeline applied prior to modelling.
+    data_dict : dict
+        Raw data splits and metadata.
+    seed : int
+        Random seed for reproducibility.
+    include_covariates : bool, default=True
+        Whether to append covariates to feature matrices.
+
+    Returns
+    -------
+    dict
+        Bundle consumed by :func:`fit_pipeline_experiment`: ``data``,
+        ``metadata``, ``sample_weights``, ``preprocessor``, and
+        ``X_final`` (preprocessed, covariate-augmented features).
+    """
+    seed_everything(seed)
+
+    # Check flags
+    use_sample_weights = data_dict.get('use_sample_weights', True)
+
+    # Unpack data into organized structure
+    data = {
+        'train': unpack_train_data(data_dict),
+        'val_in': unpack_validation_data(data_dict),
+        'test_in': unpack_test_in_data(data_dict),
+        'test_out': unpack_test_out_data(data_dict)
+    }
+    metadata = unpack_metadata(data_dict)
+
+    # Extract sample weights (consumed by fit_and_predict below)
+    sample_weights = {
+        'train': data_dict.get('sample_weights_train') if use_sample_weights else None,
+        'val_in': data_dict.get('sample_weights_val_in') if use_sample_weights else None,
+        'test_in': data_dict.get('sample_weights_test_in') if use_sample_weights else None,
+        'test_out': data_dict.get('sample_weights_test_out') if use_sample_weights else None
+    }
+
+    # Preprocess all splits
+    X_preprocessed = preprocess_all_splits(
+        preprocessor,
+        train_X=data['train']['X'],
+        val_in_X=data['val_in']['X'],
+        test_in_X=data['test_in']['X'],
+        test_out_X=data['test_out']['X']
+    )
+
+    # Pass arrays to estimators to avoid invalid pandas feature names.
+    for split_name, split_matrix in X_preprocessed.items():
+        if hasattr(split_matrix, "to_numpy"):
+            X_preprocessed[split_name] = split_matrix.to_numpy()
+        else:
+            X_preprocessed[split_name] = np.asarray(split_matrix)
+
+    # Optionally augment with covariates
+    if include_covariates:
+        X_final = augment_with_covariates(
+            X_preprocessed,
+            train_Z=data['train']['Z'],
+            val_in_Z=data['val_in']['Z'],
+            test_in_Z=data['test_in']['Z'],
+            test_out_Z=data['test_out']['Z']
+        )
+    else:
+        X_final = X_preprocessed
+
+    return {
+        'data': data,
+        'metadata': metadata,
+        'sample_weights': sample_weights,
+        'preprocessor': preprocessor,
+        'X_final': X_final,
+    }
+
+
+def fit_pipeline_experiment(prepared, estimator, seed):
+    """
+    Fit one estimator on already-preprocessed fold data and evaluate it.
+
+    Parameters
+    ----------
+    prepared : dict
+        Output of :func:`preprocess_fold_data`, shared across every
+        estimator fit on the same fold.
+    estimator : estimator
+        Model trained within the experiment.
+    seed : int
+        Random seed applied before fitting.
+
+    Returns
+    -------
+    dict
+        Complete experiment results including predictions and metadata.
+    """
+    seed_everything(seed)
+
+    data = prepared['data']
+    X_final = prepared['X_final']
+    sample_weights = prepared['sample_weights']
+
+    # Fit estimator with sample weights, generate predictions
+    predictions = fit_and_predict(
+        estimator,
+        X_train=X_final['train'],
+        y_train=data['train']['y'],
+        X_val_in=X_final['val_in'],
+        y_val_in=data['val_in']['y'],
+        X_test_in=X_final['test_in'],
+        X_test_out=X_final['test_out'],
+        sample_weight=sample_weights['train']
+    )
+
+    # Retain inputs needed for downstream subgroup metrics.
+    return build_results_dict(
+        estimator=estimator,
+        preprocessor=prepared['preprocessor'],
+        data=data,
+        predictions=predictions,
+        metadata=prepared['metadata'],
+    )
+
+
 def run_pipeline_experiment(preprocessor, estimator, data_dict, seed, include_covariates=True):
     """
     Execute preprocessing, model fitting, validation, and evaluation.
+
+    Combine fold preprocessing and fitting for one estimator.
 
     Parameters
     ----------
@@ -348,139 +463,8 @@ def run_pipeline_experiment(preprocessor, estimator, data_dict, seed, include_co
     dict
         Complete experiment results including predictions and metadata.
     """
-    seed_everything(seed)
-    
-    # Check flags
-    use_sample_weights = data_dict.get('use_sample_weights', True)
-    
-    # Unpack data into organized structure
-    data = {
-        'train': unpack_train_data(data_dict),
-        'val_in': unpack_validation_data(data_dict),
-        'test_in': unpack_test_in_data(data_dict),
-        'test_out': unpack_test_out_data(data_dict)
-    }
-    metadata = unpack_metadata(data_dict)
-    
-    # Extract sample weights
-    sample_weights = {
-        'train': data_dict.get('sample_weights_train') if use_sample_weights else None,
-        'val_in': data_dict.get('sample_weights_val_in') if use_sample_weights else None,
-        'test_in': data_dict.get('sample_weights_test_in') if use_sample_weights else None,
-        'test_out': data_dict.get('sample_weights_test_out') if use_sample_weights else None
-    }
-
-    # Extract groups
-    groups = {
-        'train': data_dict.get('groups_train'),
-        'val_in': data_dict.get('groups_val_in'),
-        'test_in': data_dict.get('groups_test_in'),
-        'test_out': data_dict.get('groups_test_out')
-    }
-    
-    # Preprocess all splits
-    X_preprocessed = preprocess_all_splits(
-        preprocessor,
-        train_X=data['train']['X'],
-        val_in_X=data['val_in']['X'],
-        test_in_X=data['test_in']['X'],
-        test_out_X=data['test_out']['X']
-    )
-
-    # Ensure downstream models always receive numpy arrays (prevents bad feature names on pandas objects)
-    for split_name, split_matrix in X_preprocessed.items():
-        if hasattr(split_matrix, "to_numpy"):
-            X_preprocessed[split_name] = split_matrix.to_numpy()
-        else:
-            X_preprocessed[split_name] = np.asarray(split_matrix)
-    
-    # Optionally augment with covariates
-    if include_covariates:
-        X_final = augment_with_covariates(
-            X_preprocessed,
-            train_Z=data['train']['Z'],
-            val_in_Z=data['val_in']['Z'],
-            test_in_Z=data['test_in']['Z'],
-            test_out_Z=data['test_out']['Z']
-        )
-    else:
-        X_final = X_preprocessed
-    
-    # Log feature dimensionality for transparency/debugging
-    glycan_feat_dim = X_preprocessed['train'].shape[1]
-    covariate_dim = data['train']['Z'].shape[1] if include_covariates else 0
-    total_feat_dim = X_final['train'].shape[1]
-    feature_dims = {
-        'glycan': glycan_feat_dim,
-        'covariate': covariate_dim,
-        'total': total_feat_dim,
-    }
-
-    # Fit estimator with sample weights and groups, generate predictions
-    predictions = fit_and_predict(
-        estimator,
-        X_train=X_final['train'],
-        y_train=data['train']['y'],
-        X_val_in=X_final['val_in'],
-        y_val_in=data['val_in']['y'],
-        X_test_in=X_final['test_in'],
-        X_test_out=X_final['test_out'],
-        sample_weight=sample_weights['train']
-    )
-    
-    # Collect test predictions
-    predictions = {
-        'train': predictions['train'],
-        'val_in': predictions['val_in'],
-        'test_in': predictions['test_in'],
-        'test_out': predictions['test_out']
-    }
-    
-    # Create subgroup names
-    subgroup_names = create_demographic_subgroup_names(
-        metadata['age_ranges'],
-        metadata['cohort_locations']
-    )
-    
-    # Perform subgroup analysis
-    subgroup_metrics = create_subgroup_metrics_dict(
-        y_train_true=data['train']['y'],
-        y_train_pred=predictions['train'],
-        Z_train_bin=data['train']['Z_bin'],
-        V_train=data['train']['V'],
-        y_val_in_true=data['val_in']['y'],
-        y_val_in_pred=predictions['val_in'],
-        Z_val_in_bin=data['val_in']['Z_bin'],
-        V_val_in=data['val_in']['V'],
-        y_test_in_true=data['test_in']['y'],
-        y_test_in_pred=predictions['test_in'],
-        Z_test_in_bin=data['test_in']['Z_bin'],
-        V_test_in=data['test_in']['V'],
-        y_test_out_true=data['test_out']['y'],
-        y_test_out_pred=predictions['test_out'],
-        Z_test_out_bin=data['test_out']['Z_bin'],
-        V_test_out=data['test_out']['V'],
-        age_group_names=subgroup_names['age'],
-        sex_group_names=subgroup_names['sex'],
-        location_names=subgroup_names['location'],
-    )
-    
-    # Build and return complete results
-    results = build_results_dict(
-        estimator=estimator,
-        preprocessor=preprocessor,
-        data=data,
-        predictions=predictions,
-        metadata=metadata,
-    )
-
-    results['feature_dimensions'] = feature_dims
-    results['groups'] = groups
-    results['subgroup_metrics'] = subgroup_metrics
-    results['use_sample_weights'] = use_sample_weights
-    results['sample_weights'] = sample_weights
-    
-    return results
+    prepared = preprocess_fold_data(preprocessor, data_dict, seed, include_covariates=include_covariates)
+    return fit_pipeline_experiment(prepared, estimator, seed)
 
 
 def make_preprocessors(processors, selected_keys=None, with_scaler=True):
@@ -503,22 +487,36 @@ def make_preprocessors(processors, selected_keys=None, with_scaler=True):
 
     return preprocessors
 
-def make_estimators(parameters, seed):
+def make_estimators(parameters, seed, model_keys=None):
     """Instantiate estimators for the configured experiment suite.
 
     Parameters
     ----------
     parameters : dict
-        Hyperparameters keyed by model identifier.
+        Hyperparameters keyed by model identifier. Only the keys selected by
+        `model_keys` need to be present.
     seed : int
         Random seed forwarded to estimators.
+    model_keys : iterable of str, optional
+        Which estimators to build. Defaults to every recognised model.
 
     Returns
     -------
     dict
         Estimators keyed by identifier.
     """
-    return {
-        'LR': LogisticRegression(**parameters['LR'], random_state=seed),
-        'XB': XGBClassifier(**parameters['XB'], random_state=seed),
+    builders = {
+        'LR': lambda: LogisticRegression(**parameters['LR'], random_state=seed),
+        # n_jobs=1 overrides any caller value: a reproducibility pin, since
+        # threaded BLAS/XGBoost reductions are not bit-identical across thread counts.
+        'XB': lambda: XGBClassifier(**{**parameters['XB'], 'n_jobs': 1}, random_state=seed),
     }
+
+    selected_keys = list(model_keys) if model_keys is not None else list(builders)
+    unknown = [key for key in selected_keys if key not in builders]
+    if unknown:
+        raise ValueError(
+            f"Unknown model key(s) {unknown}; supported keys are {sorted(builders)}."
+        )
+
+    return {key: builders[key]() for key in selected_keys}

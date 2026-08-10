@@ -12,10 +12,34 @@ from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 
 
+# Cached glycomotif tables keyed by source files and data directory.
+_GLYCOMPARE_EXCEL_CACHE = {}
+
+
+def clear_glycompare_excel_cache():
+    """Clear cached glycomotif tables."""
+    _GLYCOMPARE_EXCEL_CACHE.clear()
+
+
+def _load_glycompare_excel(abd_fname, annot_fname, data_dir=None):
+    """Load the glycomotif abundance/annotation Excel files, cached by filename."""
+    # Local import avoids circular dependency with dataset module
+    from ibd_biom_glycoda.data.dataset import load_dataset_excel
+
+    key = (str(abd_fname), str(annot_fname), str(data_dir))
+    if key not in _GLYCOMPARE_EXCEL_CACHE:
+        df_abd = load_dataset_excel(abd_fname, data_dir=data_dir)
+        df_annot = load_dataset_excel(annot_fname, data_dir=data_dir)
+        _GLYCOMPARE_EXCEL_CACHE[key] = (df_abd, df_annot)
+
+    df_abd, df_annot = _GLYCOMPARE_EXCEL_CACHE[key]
+    return df_abd.copy(), df_annot.copy()
+
+
 def load_glycompare_data(orig_df, coda_cols, abd_fname, annot_fname, data_dir=None):
     """
     Load and process glycomotif data for comparison.
-    
+
     Parameters
     ----------
     orig_df : pd.DataFrame
@@ -28,18 +52,13 @@ def load_glycompare_data(orig_df, coda_cols, abd_fname, annot_fname, data_dir=No
         Filename for the annotation Excel file
     data_dir : str or Path, optional
         Full path to the data directory. If None, uses ibd_biom_glycoda.config.DATA_DIR.
-    
+
     Returns
     -------
     tuple of pd.DataFrame
         (df_glycompare, X_glycomotif) - Combined dataframe and glycomotif features
     """
-    # Local import avoids circular dependency with dataset module
-    from ibd_biom_glycoda.data.dataset import load_dataset_excel
-
-    # Load the data using the standard loading function
-    df_abd = load_dataset_excel(abd_fname, data_dir=data_dir)
-    df_annot = load_dataset_excel(annot_fname, data_dir=data_dir)
+    df_abd, df_annot = _load_glycompare_excel(abd_fname, annot_fname, data_dir=data_dir)
 
     # Create a copy of the original dataframe
     df_glycompare = orig_df.copy()
@@ -182,28 +201,9 @@ class CLRProcessor(BaseEstimator, TransformerMixin):
         self.seed = seed
 
     def fit(self, X, y=None):
-        # Ensure is DataFrame
-        df = X.copy() if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
-
-        # Derive group1 from index
-        group1 = df.index.tolist()
-
-        # Fix random seeds
-        glwstats.rng = np.random.default_rng(self.seed)
-        np.random.seed(self.seed)
-
-        # One pass through CLR to get output columns
-        transformed = apply_clr_transformation(
-            df,
-            group1=group1,
-            group2=None,
-            gamma=self.gamma,
-            custom_scale=None,
-            seed=self.seed
-        )
-
-        # Record feature names for pipelines
-        self.feature_names_out_ = list(transformed.columns)
+        # CLR preserves input column names.
+        df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
+        self.feature_names_out_ = list(df.columns)
         return self
 
     def transform(self, X, y=None):
