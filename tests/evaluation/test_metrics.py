@@ -7,6 +7,7 @@ import pytest
 
 from ibd_biom_glycoda.evaluation.metrics import (
     ALL_METRIC_NAMES,
+    SUPPORT_KEYS,
     compute_scoring_metrics,
     summarize_scoring_metrics,
 )
@@ -34,12 +35,14 @@ class TestComputeScoringMetricsGating:
     def test_metrics_none_returns_every_metric_name(self, binary_data):
         y_true, y_proba = binary_data
         result = compute_scoring_metrics(y_true, y_proba, metrics=None)
-        assert set(result.keys()) == set(ALL_METRIC_NAMES)
+        assert set(result.keys()) == set(ALL_METRIC_NAMES) | set(SUPPORT_KEYS)
 
-    def test_subset_returns_only_requested_keys(self, binary_data):
+    def test_subset_returns_only_requested_keys_plus_support(self, binary_data):
+        """Support counts bypass the metric filter by design: no metric should
+        be obtainable without the sample it was computed on."""
         y_true, y_proba = binary_data
         result = compute_scoring_metrics(y_true, y_proba, metrics=['AUROC'])
-        assert set(result.keys()) == {'AUROC'}
+        assert set(result.keys()) == {'AUROC', *SUPPORT_KEYS}
 
     @pytest.mark.parametrize(
         "metrics",
@@ -56,7 +59,7 @@ class TestComputeScoringMetricsGating:
         full = compute_scoring_metrics(y_true, y_proba, metrics=None)
         subset = compute_scoring_metrics(y_true, y_proba, metrics=metrics)
 
-        assert set(subset.keys()) == set(metrics)
+        assert set(subset.keys()) == set(metrics) | set(SUPPORT_KEYS)
         for key in metrics:
             assert subset[key] == pytest.approx(full[key], abs=1e-12, nan_ok=True)
 
@@ -74,7 +77,7 @@ class TestComputeScoringMetricsGating:
         full = compute_scoring_metrics(y_true, y_proba, metrics=None)
         subset = compute_scoring_metrics(y_true, y_proba, metrics=metrics)
 
-        assert set(subset.keys()) == set(metrics)
+        assert set(subset.keys()) == set(metrics) | set(SUPPORT_KEYS)
         for key in metrics:
             assert subset[key] == pytest.approx(full[key], abs=1e-12, nan_ok=True)
 
@@ -83,7 +86,7 @@ class TestComputeScoringMetricsGating:
         not errors."""
         y_true, y_proba = binary_data
         result = compute_scoring_metrics(y_true, y_proba, metrics=['AUROC', 'NotAMetric'])
-        assert set(result.keys()) == {'AUROC'}
+        assert set(result.keys()) == {'AUROC', *SUPPORT_KEYS}
 
 
 class TestSummarizeScoringMetrics:

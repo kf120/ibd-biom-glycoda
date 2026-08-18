@@ -27,12 +27,17 @@ from ibd_biom_glycoda.analysis.pipelines import (
     fit_pipeline_experiment,
     create_demographic_subgroup_names,
 )
-from ibd_biom_glycoda.evaluation.metrics import compute_scoring_metrics, aggregate_all_metrics, summarize_scoring_metrics, is_lower_better
+from ibd_biom_glycoda.evaluation.metrics import (
+    compute_scoring_metrics,
+    aggregate_all_metrics,
+    summarize_scoring_metrics,
+    is_lower_better,
+    SUPPORT_KEYS,
+    ESTIMABLE_KEY,
+)
 from ibd_biom_glycoda.evaluation.subgroup_analysis import (
     calculate_subgroup_performance,
     calculate_intersection_performance,
-    SUPPORT_KEYS,
-    ESTIMABLE_KEY,
 )
 
 # Splits retained for fold-level and subgroup metrics.

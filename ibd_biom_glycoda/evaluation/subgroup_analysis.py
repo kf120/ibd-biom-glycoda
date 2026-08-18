@@ -9,25 +9,20 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 from ibd_biom_glycoda.data.dataset import cohort_index_from_onehot
-from ibd_biom_glycoda.evaluation.metrics import compute_scoring_metrics, is_lower_better
+from ibd_biom_glycoda.evaluation.metrics import (
+    compute_scoring_metrics,
+    compute_support,
+    is_lower_better,
+    ESTIMABLE_KEY,
+    SUPPORT_KEYS,
+)
 
 DEFAULT_SUBGROUP_METRICS = ['AUROC', 'LogLoss', 'Brier', 'Sensitivity', 'Specificity']
 
-# Support counts accompany every subgroup result. They are summed rather than
-# averaged when fold results are combined, so they are named separately from the
-# scoring metrics.
-SUPPORT_KEYS = ('n', 'n_cases', 'n_controls')
-
-# 1.0 when the subgroup had both outcome classes and its metrics were computed,
-# 0.0 when the metrics are NaN because the subgroup was not estimable.
-ESTIMABLE_KEY = 'estimable'
-
-
-def _subgroup_support(true_labels_subset):
-    """Return support counts for one subgroup slice."""
-    y = np.asarray(true_labels_subset)
-    n_cases = int(np.sum(y == 1))
-    return {'n': int(y.size), 'n_cases': n_cases, 'n_controls': int(y.size) - n_cases}
+# ``SUPPORT_KEYS`` and ``ESTIMABLE_KEY`` are defined in ``metrics`` alongside the
+# scoring functions that emit them, and re-exported here for the existing
+# importers of this module.
+_subgroup_support = compute_support
 
 
 def _evaluate_subgroup(true_labels_subset, pred_subset, metrics):

@@ -2,12 +2,15 @@
 """
 @author: Konstantinos Flevaris
 """
+import logging
 import warnings
 
 import numpy as np
 from scipy.stats import t, sem
 from sklearn.metrics import roc_auc_score, average_precision_score, log_loss, brier_score_loss, matthews_corrcoef, balanced_accuracy_score
 from sklearn.preprocessing import label_binarize
+
+logger = logging.getLogger(__name__)
 
 def compute_ovr_metrics(y_true, y_pred, n_classes):
     """Compute one-versus-rest threshold metrics for each observed class.
@@ -103,10 +106,35 @@ ALL_METRIC_NAMES = (
     | THRESHOLD_METRIC_NAMES
 )
 
+# Support counts accompany every metric dictionary so that no subgroup or cohort
+# number can be read without the sample it came from. They are summed, not
+# averaged, when fold results are combined, so they are named separately from the
+# scoring metrics and are returned regardless of the requested ``metrics`` subset.
+SUPPORT_KEYS = ('n', 'n_cases', 'n_controls')
+
+# 1.0 when the slice had both outcome classes and its metrics were computed,
+# 0.0 when the metrics are NaN because the slice was not estimable.
+ESTIMABLE_KEY = 'estimable'
+
+# Case fraction is deliberately NOT stored beside the support counts. Fold
+# aggregation sums counts and averages metrics, and the mean of per-fold case
+# fractions is not the case fraction of the pooled sample unless every fold is
+# the same size. Derive it from the summed ``n_cases`` and ``n`` instead, which
+# is what ``case_fraction`` below does.
+
 LOWER_IS_BETTER_KEYWORDS = frozenset({
     'logloss', 'loss', 'brier', 'mce', 'mcr', 'fpr', 'fnr',
     'error', 'nll', 'rmse', 'mae', 'mse', 'misclassification'
 })
+
+# Minimum support below which a subgroup estimate is flagged rather than read as
+# evidence. Pre-specified in the analysis plan; not tuned to observed results.
+MIN_CASES_FOR_SUPPORT = 20
+MIN_CONTROLS_FOR_SUPPORT = 20
+
+SUPPORT_FLAG_OK = 'OK'
+SUPPORT_FLAG_LOW = 'LOW SUPPORT'
+SUPPORT_FLAG_NOT_ESTIMABLE = 'NOT ESTIMABLE'
 
 
 def is_lower_better(metric_name):
@@ -117,6 +145,75 @@ def is_lower_better(metric_name):
     """
     name_norm = metric_name.lower().replace('_', ' ')
     return any(keyword in name_norm for keyword in LOWER_IS_BETTER_KEYWORDS)
+
+
+def compute_support(y_true):
+    """Return the support counts that accompany every metric dictionary.
+
+    Parameters
+    ----------
+    y_true : array-like
+        Observed binary labels, where 1 denotes a case.
+
+    Returns
+    -------
+    dict
+        ``n``, ``n_cases``, and ``n_controls``. With more than two label values
+        the case/control split is meaningless, so those two are NaN while ``n``
+        still reports the slice size.
+    """
+    y = np.asarray(y_true)
+    if np.unique(y).size > 2:
+        logger.debug("Case/control support undefined for %d label values.", np.unique(y).size)
+        return {'n': int(y.size), 'n_cases': np.nan, 'n_controls': np.nan}
+    n_cases = int(np.sum(y == 1))
+    return {'n': int(y.size), 'n_cases': n_cases, 'n_controls': int(y.size) - n_cases}
+
+
+def case_fraction(support):
+    """Return cases divided by total from a support dictionary, or NaN if empty.
+
+    Derived on demand rather than stored, so that it stays correct after fold
+    aggregation sums the counts.
+    """
+    n = support.get('n', 0)
+    if not n:
+        return np.nan
+    return support['n_cases'] / n
+
+
+def support_flag(
+    support,
+    min_cases=MIN_CASES_FOR_SUPPORT,
+    min_controls=MIN_CONTROLS_FOR_SUPPORT,
+):
+    """Classify a group's support as OK, low, or non-estimable.
+
+    ``NOT ESTIMABLE`` takes precedence over ``LOW SUPPORT``: a group with no
+    cases cannot yield a discrimination or threshold metric at all, so flagging
+    it as merely sparse would overstate what is there.
+
+    Parameters
+    ----------
+    support : dict
+        Dictionary containing ``n``, ``n_cases``, and ``n_controls``.
+    min_cases : int, optional
+        Case count below which the group is flagged. Default 20.
+    min_controls : int, optional
+        Control count below which the group is flagged. Default 20.
+
+    Returns
+    -------
+    str
+        One of ``NOT ESTIMABLE``, ``LOW SUPPORT``, or ``OK``.
+    """
+    n_cases = support.get('n_cases', 0)
+    n_controls = support.get('n_controls', 0)
+    if n_cases == 0 or n_controls == 0:
+        return SUPPORT_FLAG_NOT_ESTIMABLE
+    if n_cases < min_cases or n_controls < min_controls:
+        return SUPPORT_FLAG_LOW
+    return SUPPORT_FLAG_OK
 
 
 def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=None):
@@ -133,14 +230,17 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
     y_pred_proba : array-like
         Predicted probabilities aligned with model classes.
     metrics : list, optional
-        Subset of metric names to return; defaults to the full set.
+        Subset of metric names to return; defaults to the full set. The support
+        counts in ``SUPPORT_KEYS`` are returned regardless of this filter.
     model_classes : array-like, optional
         Explicit class ordering for the probability columns.
 
     Returns
     -------
     dict
-        Dictionary containing discrimination scores, probability-accuracy scores, and threshold metrics.
+        Discrimination, probability-accuracy, and threshold scores, always
+        accompanied by the ``n``, ``n_cases``, and ``n_controls`` support counts
+        so that no value can be read without its sample.
     """
     y_true = np.array(y_true)
     y_pred_proba = np.array(y_pred_proba)
@@ -278,6 +378,11 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
         results = {metric: all_results[metric] for metric in metrics if metric in all_results}
     else:
         results = all_results
+
+    # Support counts bypass the metric filter: every number above is
+    # uninterpretable without them, so a caller must not be able to request a
+    # subgroup metric without the sample it was computed on.
+    results.update(compute_support(y_true))
 
     return results
 
