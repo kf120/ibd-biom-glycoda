@@ -94,18 +94,16 @@ def create_group_identifiers(V, Z_bin, age_ranges):
     - Group 2: Cohort_0, Age_1, Sex_0
     - ...
     """
-    # Convert to numpy arrays
     if hasattr(V, 'values'):
         V = V.values
     else:
         V = np.asarray(V)
-    
+
     if hasattr(Z_bin, 'values'):
         Z_bin = Z_bin.values
     else:
         Z_bin = np.asarray(Z_bin)
-    
-    # Extract cohort index from one-hot encoding
+
     cohort_idx = cohort_index_from_onehot(V)
     if np.any(cohort_idx == UNKNOWN_COHORT_INDEX):
         raise ValueError(
@@ -115,21 +113,17 @@ def create_group_identifiers(V, Z_bin, age_ranges):
             "first training cohort."
         )
     n_cohorts = V.shape[1]
-    
-    # Extract demographics from Z_bin
-    # Z_bin has shape (n_samples, 2): [Sex, Age_bin]
+
+    # Z_bin columns are [Sex, Age_bin].
     sex = Z_bin[:, 0].astype(int)
     age_bin = Z_bin[:, 1].astype(int)
-    
-    # Number of demographic categories
+
     n_age_bins = len(age_ranges) - 1
-    n_sex = 2  # Binary: 0 and 1
-    
-    # Create unique group ID using cross-product encoding
-    # Formula: group_id = cohort_idx * (n_age_bins * n_sex) + age_bin * n_sex + sex
+    n_sex = 2
+
+    # group_id = cohort_idx * (n_age_bins * n_sex) + age_bin * n_sex + sex
     groups = cohort_idx * (n_age_bins * n_sex) + age_bin * n_sex + sex
-    
-    # Total number of groups
+
     n_groups = n_cohorts * n_age_bins * n_sex
     
     return groups, n_groups
@@ -367,11 +361,7 @@ def compute_sample_weights(Z_bin, y=None, components=None):
         Sample weights for each sample
     """
     strata = build_weight_strata(Z_bin, y=y, components=components)
-    
-    # Compute weights
-    weights = assign_inverse_frequency_weights(strata)
-    
-    return weights
+    return assign_inverse_frequency_weights(strata)
 
 def prepare_loco_data_outer(df_sub, coda_cols, loco_cohort, seed):
     """Prepare outer-loop datasets for a LOCO run.
@@ -405,10 +395,8 @@ def prepare_loco_data_outer(df_sub, coda_cols, loco_cohort, seed):
     (X_train, Z_train, Z_train_bin, y_train, V_train) = train_data
     (X_test_out, Z_test_out, Z_test_out_bin, y_test_out, V_test_out) = test_data
 
-    # Create joint stratification labels for inner CV
     joint_labels_train = create_stratification_labels(V_train, y_train, Z_train_bin, metadata['age_ranges'])
 
-    # Print stratification profile for training set
     _, min_nfolds = print_stratification_profile(
         stratification_labels=joint_labels_train,
         V=V_train,
@@ -460,8 +448,6 @@ def prepare_loco_data_inner(
         Indices for the fold validation portion.
     fold_idx : int
         Fold counter used for seeding.
-    use_calibration : bool, default=False
-        Whether to carve out an in-sample calibration set.
     use_sample_weights : bool, default=True
         Whether to compute age-sex sample weights.
     val_size_inner : float, default=0.10
@@ -473,7 +459,6 @@ def prepare_loco_data_inner(
         Dictionary containing all fold splits and metadata.
     """
     
-    # Extract outer loop data
     X_all = outer.X_train
     y_all = outer.y_train
     Z_all = outer.Z_train
@@ -481,7 +466,6 @@ def prepare_loco_data_inner(
     V_all = outer.V_train
     joint_labels_all = outer.joint_labels_train
 
-    # Split into K-fold train and validation using provided indices
     X_fold_train = get_safe_index(X_all, train_idx)
     X_fold_test_in   = get_safe_index(X_all, val_idx)
     y_fold_train = get_safe_index(y_all, train_idx)
@@ -494,13 +478,11 @@ def prepare_loco_data_inner(
     V_fold_test_in   = get_safe_index(V_all, val_idx)
     joint_labels_fold_train = get_safe_index(joint_labels_all, train_idx)
 
-    # Confirm stratification labels
     if use_full_stratification_inner_cv:
         stratification_labels = joint_labels_fold_train
     else:
         stratification_labels = y_fold_train
-  
-    # Split fold training into main and validation portions
+
     splits = split_train_validation(
         X=X_fold_train,
         y=y_fold_train,
@@ -512,7 +494,6 @@ def prepare_loco_data_inner(
         random_state=outer.seed + fold_idx
     )
 
-    # Use split data
     X_train_final = splits['train']['X']
     y_train_final = splits['train']['y']
     Z_train_final = splits['train']['Z']
@@ -525,19 +506,16 @@ def prepare_loco_data_inner(
     Z_bin_val_in = splits['val']['Z_bin']
     V_val_in = splits['val']['V']
 
-    # Compute sample weights if requested
     if use_sample_weights:
-        # Weights for training set
         sample_weights_train = compute_sample_weights(Z_bin_train_final, y=y_train_final, components=("age_sex", "label"))
     else:
         sample_weights_train = None
 
-    # Groups for training set
     groups_train, n_groups_train = create_group_identifiers(
         V_train_final, Z_bin_train_final, outer.age_ranges
     )
 
-    # Print set sizes for verification (same line)
+    # No trailing newline: the next print continues this line.
     print(
         f" Fold {fold_idx} sizes | "
         f"Train: {len(X_train_final)}, "
@@ -549,9 +527,7 @@ def prepare_loco_data_inner(
     )
 
 
-    # Assemble fold data dictionary
     fold_data = {
-        # Training split used for model fitting
         'X_train': X_train_final,
         'y_train': y_train_final,
         'Z_train': Z_train_final,
@@ -560,35 +536,30 @@ def prepare_loco_data_inner(
         'sample_weights_train': sample_weights_train,
         'groups_train': groups_train,
 
-        # Calibration split drawn from fold training data
         'X_val_in': X_val_in,
         'y_val_in': y_val_in,
         'Z_val_in': Z_val_in,
         'Z_val_in_bin': Z_bin_val_in,
         'V_val_in': V_val_in,
 
-        # In-sample validation/test set (fold validation split)
         'X_test_in': X_fold_test_in,
         'y_test_in': y_fold_test_in,
         'Z_test_in': Z_fold_test_in,
         'Z_test_in_bin': Z_bin_fold_test_in,
         'V_test_in': V_fold_test_in,
 
-        # Out-of-sample test set (LOCO cohort from base)
         'X_test_out': outer.X_test_out,
         'y_test_out': outer.y_test_out,
         'Z_test_out': outer.Z_test_out,
         'Z_test_out_bin': outer.Z_test_out_bin,
         'V_test_out': outer.V_test_out,
 
-        # Metadata
         'age_ranges': outer.age_ranges,
         'cohort_locations': outer.cohort_locations,
         'ohe_cohort': outer.ohe_cohort,
         'scaler': outer.scaler,
         'GP_cols': outer.gp_cols,
-        
-        # Flags
+
         'n_groups': n_groups_train,
         'use_sample_weights': use_sample_weights,
     }
@@ -603,8 +574,6 @@ def aggregate_loco_results_across_folds_per_seed(fold_results):
     ----------
     fold_results : list of dict
         Results returned by each fold.
-    use_calibration : bool, default=False
-        Whether calibration outputs are present.
 
     Returns
     -------
@@ -625,16 +594,14 @@ def aggregate_loco_results_across_folds_per_seed(fold_results):
         'Z_test_out_bin', 'V_test_out',
     }
 
-    # Retain fitted objects separately for each fold.
     per_fold_object_keys = {'model', 'processor'}
 
     for key in fold_results[0].keys():
         if key in per_sample_keys:
-            # Skip None values (in case calibration is disabled)
             arrays = [np.asarray(fold_res[key]) for fold_res in fold_results
                      if fold_res.get(key) is not None]
 
-            if arrays:  # Only concatenate if we have non-None arrays
+            if arrays:
                 try:
                     aggregated[key] = np.concatenate(arrays, axis=0)
                 except Exception as e:
@@ -645,7 +612,7 @@ def aggregate_loco_results_across_folds_per_seed(fold_results):
         elif key in per_fold_object_keys:
             aggregated[key] = [fold_res[key] for fold_res in fold_results]
         else:
-            # For constant metadata keys, just use the first fold's value
+            # Constant across folds: any fold's value is representative.
             aggregated[key] = fold_results[0][key]
 
     return aggregated
@@ -685,8 +652,6 @@ def process_one_loco_run(
         Parameter grids keyed by model identifier.
     n_folds : int
         Number of inner cross-validation folds.
-    use_calibration : bool, default=False
-        Whether to create calibration splits and post-hoc calibration.
     use_sample_weights : bool, default=True
         Whether to use age-sex sample weights.
     include_covariates : bool, default=True
@@ -707,30 +672,22 @@ def process_one_loco_run(
     if use_sample_weights:
         print(f"     Sample weighting ENABLED - balancing age-sex-disease strata")
     
-    # Prepare outer data for this LOCO cohort and seed
     outer = prepare_loco_data_outer(
         df_sub=df,
         coda_cols=feature_cols,
         loco_cohort=cohort,
         seed=seed
     )
-    
-    # Set up K-fold cross-validation
+
     skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
-    
-    # Instantiate only the selected models for this seed
     estimators = make_estimators(model_parameters, seed, model_keys=model_keys)
-    
-    # Initialize results storage
     fold_results = {model_key: [] for model_key in estimators}
-    
-    # Iterate through folds
+
     for fold_idx, (train_idx, val_idx) in enumerate(
             skf.split(outer.X_train, outer.y_train), start=1):
-        
+
         print(f"    - Fold {fold_idx}/{n_folds}")
-        
-        # Create fold-specific data dictionary
+
         fold_data = prepare_loco_data_inner(
             outer, train_idx, val_idx, fold_idx, 
             use_full_stratification_inner_cv=use_full_stratification_inner_cv,
@@ -752,7 +709,6 @@ def process_one_loco_run(
                 result[f'{split}_fold_id'] = np.full(n_split, fold_idx, dtype=int)
             fold_results[model_key].append(result)
     
-    # Aggregate results across folds for each model
     aggregated = {
         model_key: aggregate_loco_results_across_folds_per_seed(
             fold_results[model_key]
@@ -908,8 +864,6 @@ def run_loco_cv(
         backend works (e.g. a cluster/distributed backend registered via
         ``joblib.register_parallel_backend``), since only ``n_jobs`` and
         ``backend`` are threaded through to ``Parallel``.
-    use_calibration : bool, default=False
-        Whether to calibrate predictions.
     use_sample_weights : bool, default=True
         Whether to use age-sex sample weights.
     include_covariates : bool, default=True
@@ -935,7 +889,6 @@ def run_loco_cv(
             selected_seeds=selected_seeds,
         )
 
-    # Initialize results storage
     raw = {
         cohort: {key: [] for key in pipeline_keys}
         for cohort in loco_test_cohorts
@@ -966,7 +919,6 @@ def run_loco_cv(
             )
         return proc_name, cohort, seed, aggregated
 
-    # Submit the full preprocessor/cohort/seed grid together.
     tasks = [
         (proc_name, cohort, seed)
         for proc_name in scaled_procs
@@ -1160,13 +1112,12 @@ def summarize_loco_results_across_folds_and_seeds(results, variables, all_metric
         DataFrames with overall metrics and subgroup analyses.
     """
     
-    # Use defaultdict to avoid explicit initialization for metrics and subgroup metrics
+    # defaultdict avoids explicit initialization at each nesting level.
     metrics = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     subgroup_metrics = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
 
     subgroup_vars = [v for v in variables if v != 'disease']
 
-    # Average disease and subgroup metrics across folds for each model.
     for model_key in model_keys:
         for run_index, res in enumerate(results[model_key]):
             subgroup_names = (
@@ -1179,13 +1130,11 @@ def summarize_loco_results_across_folds_and_seeds(results, variables, all_metric
                 y_pred = res[f'{set_type}_pred']
                 fold_id = res[f'{set_type}_fold_id']
 
-                # Overall analysis: disease metrics
                 disease_metrics = compute_fold_averaged_disease_metrics(
                     y_true, y_pred, fold_id, all_metrics
                 )
                 metrics[model_key][set_type]['disease'].append(disease_metrics)
 
-                # Load subgroup covariates.
                 if subgroup_vars:
                     Z_bin = res[f'Z_{set_type}_bin']
                     V = res[f'V_{set_type}']
@@ -1195,7 +1144,6 @@ def summarize_loco_results_across_folds_and_seeds(results, variables, all_metric
                         y_true, y_pred, fold_id, Z_bin, V, subgroup_var, all_metrics, subgroup_names
                     )
                     if subgroup_var == 'age_sex':
-                        # Nest metrics by age and sex.
                         for age_group, age_dict in subgroup_results.items():
                             if age_group not in subgroup_metrics[model_key][set_type][subgroup_var]:
                                 subgroup_metrics[model_key][set_type][subgroup_var][age_group] = {}
@@ -1211,12 +1159,10 @@ def summarize_loco_results_across_folds_and_seeds(results, variables, all_metric
     final_results = {}
     subgroup_analysis_final = {}
 
-    # Aggregate results for each set type
     for set_type in set_types:
         final_results[set_type] = {}
         subgroup_analysis_final[set_type] = {}
 
-        # Aggregate disease metrics (for 'disease' var)
         for var in variables:
             if var == 'disease':
                 aggregated_disease_results = aggregate_all_metrics(
@@ -1232,10 +1178,10 @@ def summarize_loco_results_across_folds_and_seeds(results, variables, all_metric
                     rows.append(row)
                 final_results[set_type][var] = pd.DataFrame(rows)
 
-        # Aggregate subgroup metrics.
         for subgroup_var in [v for v in variables if v != 'disease']:
             subgroup_analysis_final[set_type][subgroup_var] = {}
-            # Use the first model's groups as a reference.
+            # Groups are keyed off the first model; all models share the same
+            # subgroup structure, so any model's keys would do.
             ref_model = model_keys[0]
             if subgroup_var == 'age_sex':
                 for age_group, sex_dict in subgroup_metrics[ref_model][set_type][subgroup_var].items():
@@ -1263,7 +1209,7 @@ def summarize_loco_results_across_folds_and_seeds(results, variables, all_metric
                                     f"for subgroup '{subgroup_var}' in set '{set_type}'."
                                 )
             else:
-                # Regular subgroup variables like age, sex, location.
+                # Single-level subgroups: age, sex, location.
                 for group in subgroup_metrics[ref_model][set_type][subgroup_var].keys():
                     subgroup_analysis_final[set_type][subgroup_var][group] = {}
                     for model_key in model_keys:
@@ -1317,7 +1263,6 @@ def aggregate_loco_results_per_test_cohort(
     tuple
         Summary tables per cohort and subgroup analyses.
     """
-    # Default parameter values
     vars = vars or ['disease', 'age_sex']
     metrics = metrics or ['AUROC', 'LogLoss']
     sets = sets or ['test_in', 'test_out']
@@ -1328,7 +1273,6 @@ def aggregate_loco_results_per_test_cohort(
     for cohort in loco_test_cohorts:
         print(f"Results for Test Cohort: {cohort}")
         
-        # Analyze results for this cohort
         results_test_cohort, subgroup_analysis = summarize_loco_results_across_folds_and_seeds(
             results_loco_raw[cohort],
             vars,
@@ -1336,8 +1280,7 @@ def aggregate_loco_results_per_test_cohort(
             sets,
             pipeline_keys
         )
-        
-        # Store results
+
         results_loco_test_cohorts[cohort] = results_test_cohort
         subgroup_analyses_loco[cohort] = subgroup_analysis
 

@@ -37,13 +37,11 @@ def compute_dunn_index(distance_matrix, labels):
 
     for i, lab_i in enumerate(unique):
         idx_i = np.where(labels == lab_i)[0]
-        # Compute intra-cluster diameter
         if idx_i.size > 1:
             intra.append(distance_matrix[np.ix_(idx_i, idx_i)].max())
         else:
             intra.append(0.0)
 
-        # Compute pairwise inter-cluster separations
         for lab_j in unique[i + 1:]:
             idx_j = np.where(labels == lab_j)[0]
             inter.append(distance_matrix[np.ix_(idx_i, idx_j)].min())
@@ -97,27 +95,22 @@ def generate_beta_diversity_pca_results(
 
     for stratum_name, stratum_df in df.groupby(stratify_col):
 
-    # Compute Euclidean distance on provided features
         X = stratum_df[feature_cols].values
         D = squareform(pdist(X, metric='euclidean'))
 
-    # Perform classical MDS using double centering
+        # Classical MDS via double centering.
         n = D.shape[0]
         H = np.eye(n) - np.ones((n, n)) / n
         B = -0.5 * H.dot(D ** 2).dot(H)
 
-        # Eigen decomposition
         eigvals, eigvecs = np.linalg.eigh(B)
 
-        # Sort in descending order
         idx = np.argsort(eigvals)[::-1]
         eigvals, eigvecs = eigvals[idx], eigvecs[:, idx]
 
-        # Get coordinates for first two principal components
         coords = eigvecs[:, :2] * np.sqrt(eigvals[:2])
         explained = eigvals / eigvals.sum()
 
-        # Create PCA DataFrame
         pca_df = pd.DataFrame(coords, columns=['Dim1', 'Dim2'])
         pca_df[cluster_col] = stratum_df[cluster_col].values
         pca_df['Explained_Var1'] = explained[0]
@@ -133,7 +126,6 @@ def generate_beta_diversity_pca_results(
                     pca_df[cluster_col], categories=categories, ordered=True
                 )
 
-    # Compute clustering metrics for the stratum
         silhouette = silhouette_score(D, stratum_df[cluster_col], metric='precomputed')
         dunn = compute_dunn_index(D, stratum_df[cluster_col].values)
 
@@ -181,17 +173,14 @@ def plot_beta_diversity_pca_panel(ax, pca_df, cluster_col, cluster_order, colors
         The modified axis.
     """
     
-    # Read explained variance for axis labels
     var1 = pca_df['Explained_Var1'].iloc[0] if 'Explained_Var1' in pca_df.columns else np.nan
     var2 = pca_df['Explained_Var2'].iloc[0] if 'Explained_Var2' in pca_df.columns else np.nan
 
-    # Determine clusters to plot (respect provided order if any)
     if cluster_order is None:
         clusters_to_plot = pca_df[cluster_col].unique()
     else:
         clusters_to_plot = [c for c in cluster_order if c in pca_df[cluster_col].values]
 
-    # Draw points per cluster
     for cluster in clusters_to_plot:
         cluster_data = pca_df[pca_df[cluster_col] == cluster]
         ax.scatter(
@@ -205,26 +194,20 @@ def plot_beta_diversity_pca_panel(ax, pca_df, cluster_col, cluster_order, colors
             linewidth=0.5
         )
     
-    # Axis labels with variance
     if not np.isnan(var1) and not np.isnan(var2):
         ax.set_xlabel(f"Dim1 ({var1 * 100:.1f}%)", fontsize=12, fontweight='bold')
         ax.set_ylabel(f"Dim2 ({var2 * 100:.1f}%)", fontsize=12, fontweight='bold')
     else:
         ax.set_xlabel("Dim1", fontsize=12, fontweight='bold')
         ax.set_ylabel("Dim2", fontsize=12, fontweight='bold')
-    
-    # Title
+
     if title:
         ax.set_title(title, fontsize=13, fontweight='bold', pad=10)
-    
-    # Reference lines
+
     ax.axhline(0, linestyle='--', color='gray', lw=0.5, alpha=0.5)
     ax.axvline(0, linestyle='--', color='gray', lw=0.5, alpha=0.5)
-    
-    # Grid
+
     ax.grid(True, alpha=0.2, linestyle=':', linewidth=0.5)
-    
-    # Ticks
     ax.tick_params(labelsize=10)
     
     return ax

@@ -109,8 +109,7 @@ def prepare_loco_performance_data(
     ... )
     """
     parser = parse_model_name or parse_pipeline
-    
-    # Melt results into DataFrame
+
     rows = []
     mean_col = f"{metric} Mean"
     sem_col = f"{metric} SEM"
@@ -131,12 +130,10 @@ def prepare_loco_performance_data(
     if df_plot.empty:
         raise ValueError("No data found—check dict structure or metric name.")
     
-    # Parse model names
     df_plot[['Preprocessor', 'Estimator']] = df_plot['Model'].apply(
         lambda s: pd.Series(parser(s))
     )
     
-    # Filter and order estimators
     if estimators_order is not None:
         df_plot = df_plot[df_plot['Estimator'].isin(estimators_order)]
         df_plot['Estimator'] = pd.Categorical(
@@ -145,7 +142,6 @@ def prepare_loco_performance_data(
             ordered=True
         )
     
-    # Filter and order preprocessors
     if preprocessor_order is not None:
         df_plot = df_plot[df_plot['Preprocessor'].isin(preprocessor_order)]
         df_plot['Preprocessor'] = pd.Categorical(
@@ -154,7 +150,6 @@ def prepare_loco_performance_data(
             ordered=True
         )
     
-    # Create metadata
     metadata = {
         'metric': metric,
         'mean_col': mean_col,
@@ -238,7 +233,7 @@ def prepare_generalization_data_overall(
             col_norm = col.replace(' ', '').lower()
             if 'mean' in col_norm and metric_norm in col_norm:
                 return col
-        # As a fallback, accept exact "{metric} Mean" case-sensitive
+        # Fallback: exact case-sensitive match.
         fallback = f'{metric} Mean'
         if fallback in df.columns:
             return fallback
@@ -249,7 +244,6 @@ def prepare_generalization_data_overall(
 
     set_a, set_b = sets
 
-    # Start with the first metric as base
     metric_names = list(metric_dfs.keys())
     if len(metric_names) == 0:
         raise ValueError("metric_dfs is empty; nothing to prepare.")
@@ -259,7 +253,6 @@ def prepare_generalization_data_overall(
     mean_col = _find_mean_column(df_merged, first_metric)
     df_merged = df_merged.rename(columns={mean_col: f'{first_metric}_mean'})
 
-    # Merge all other metrics
     for metric_name in metric_names[1:]:
         df_metric = metric_dfs[metric_name].copy()
         mean_col = _find_mean_column(df_metric, metric_name)
@@ -271,14 +264,12 @@ def prepare_generalization_data_overall(
             how='inner'
         )
     
-    # Apply filter if specified
     if filter_value is not None:
         filter_col = 'Estimator' if group_by == 'Preprocessor' else 'Preprocessor'
         df_merged = df_merged[df_merged[filter_col] == filter_value]
     
     results_dict = {}
-    
-    # Group by the specified column
+
     unique_methods = df_merged[group_by].unique()
     if len(unique_methods) == 0:
         raise ValueError("No entries found after filtering; check group_by/filter_value inputs.")
@@ -290,7 +281,6 @@ def prepare_generalization_data_overall(
         for cohort in df_method['LOCO'].unique():
             df_cohort = df_method[df_method['LOCO'] == cohort]
             
-            # Extract set_a and set_b values
             set_a_rows = df_cohort[df_cohort['Set'] == set_a]
             set_b_rows = df_cohort[df_cohort['Set'] == set_b]
 
@@ -302,7 +292,6 @@ def prepare_generalization_data_overall(
             set_a_row = set_a_rows.iloc[0]
             set_b_row = set_b_rows.iloc[0]
             
-            # Build result dictionary for this cohort
             cohort_results = {}
             for metric_name in metric_names:
                 cohort_results[f'{metric_name}_{set_a}'] = set_a_row[f'{metric_name}_mean']
@@ -377,8 +366,7 @@ def extract_metrics_for_plotting(results_dict, metrics=['auroc', 'logloss'], set
         
         for cohort, metric_values in cohort_data.items():
             filtered_dict[method][cohort] = {}
-            
-            # Extract only the specified metrics
+
             for metric in metrics:
                 test_in_key = f'{metric}_{set_a}'
                 test_out_key = f'{metric}_{set_b}'
@@ -434,7 +422,6 @@ def run_full_generalization_gap_analysis_overall(
         values the corresponding DataFrames produced by `prepare_loco_performance_data`.
     """
 
-    # Prepare data for each metric
     df_discr, _ = prepare_loco_performance_data(
         results_test_cohorts=results_loco_test_cohorts,
         sets=sets,
@@ -553,10 +540,8 @@ def plot_generalization_gaps_overall(
         raise ValueError("sets must be a sequence with exactly two entries.")
     set_names = tuple(str(s) for s in sets)
     
-    # Markers for different methods/models
     marker_styles = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
-    
-    # Get methods/models
+
     methods = list(results_dict.keys())
     n_methods = len(methods)
     
@@ -566,11 +551,10 @@ def plot_generalization_gaps_overall(
     if n_methods == 0:
         raise ValueError("results_dict is empty; nothing to plot.")
 
-    # Get all cohorts (assuming all methods have same cohorts)
+    # Assumes every method was run on the same set of cohorts.
     cohorts = list(results_dict[methods[0]].keys())
     n_cohorts = len(cohorts)
-    
-    # Color scheme for cohorts
+
     if cohort_palette is None:
         cohort_colors = list(plt.cm.get_cmap('viridis', n_cohorts).colors)
     elif isinstance(cohort_palette, dict):
@@ -588,8 +572,7 @@ def plot_generalization_gaps_overall(
         cohort_colors = list(cohort_palette[:n_cohorts])
 
     cohort_color_map = dict(zip(cohorts, cohort_colors))
-    
-    # Create figure and axes if not provided
+
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
     else:
@@ -598,7 +581,7 @@ def plot_generalization_gaps_overall(
     if n_cohorts == 0:
         raise ValueError("results_dict does not contain any cohorts to visualize.")
 
-    # Determine metric names from the first cohort entry
+    # Assumes every cohort/method has the same metric keys; first entry is representative.
     sample_results = results_dict[methods[0]][cohorts[0]]
     metric_prefixes = []
     for key in sample_results.keys():
@@ -630,21 +613,17 @@ def plot_generalization_gaps_overall(
             return (ratio - 1.0) if low_is_better else 1.0 - ratio
         return (comparison - reference) if low_is_better else (reference - comparison)
 
-    # Store all gaps for axis limits
-    all_x_gaps = []
+    all_x_gaps = []  # Collected for axis-limit padding, below.
     all_y_gaps = []
 
-    # Store gaps by method for computing averages
-    method_gaps = {method: {'x': [], 'y': []} for method in methods}
+    method_gaps = {method: {'x': [], 'y': []} for method in methods}  # For the black average markers.
 
     x_lower_better = is_lower_better(metric_x)
     y_lower_better = is_lower_better(metric_y)
     
-    # Process each method/model
     for method_idx, method in enumerate(methods):
         marker = marker_styles[method_idx]
-        
-        # Process each cohort
+
         for cohort_idx, cohort in enumerate(cohorts):
             results = results_dict[method][cohort]
 
@@ -665,11 +644,9 @@ def plot_generalization_gaps_overall(
             all_x_gaps.append(gap_x)
             all_y_gaps.append(gap_y)
 
-            # Store for average calculation
             method_gaps[method]['x'].append(gap_x)
             method_gaps[method]['y'].append(gap_y)
-            
-            # Plot cohort point
+
             ax.scatter(gap_x, gap_y,
                       s=60, alpha=0.7, 
                       color=cohort_color_map[cohort],
@@ -677,13 +654,11 @@ def plot_generalization_gaps_overall(
                       edgecolor='black', linewidth=1.5,
                       zorder=1)
     
-    # Plot average gaps for each method in black
     for method_idx, method in enumerate(methods):
         marker = marker_styles[method_idx]
         avg_x_gap = np.nanmean(method_gaps[method]['x'])
         avg_y_gap = np.nanmean(method_gaps[method]['y'])
-        
-        # Plot average point in black
+
         ax.scatter(avg_x_gap, avg_y_gap,
                   s=100, alpha=0.9,
                   color='black',
@@ -691,7 +666,6 @@ def plot_generalization_gaps_overall(
                   edgecolor='white', linewidth=2,
                   zorder=3)
     
-    # Determine axis limits with padding
     all_x_gaps = np.array(all_x_gaps, dtype=float)
     all_y_gaps = np.array(all_y_gaps, dtype=float)
 
@@ -701,16 +675,15 @@ def plot_generalization_gaps_overall(
     if valid_x.size == 0 or valid_y.size == 0:
         raise ValueError("Gaps contain only NaN values; cannot determine axis limits.")
 
+    # 20% padding plus a small fixed margin.
     max_x = max(valid_x.max(), 0) * 1.2 + 0.01
     max_y = max(valid_y.max(), 0) * 1.2 + 0.01
     min_x = min(valid_x.min(), 0) * 1.2 - 0.01
     min_y = min(valid_y.min(), 0) * 1.2 - 0.01
-    
-    # Add reference lines
+
     ax.axhline(y=0, color='gray', linestyle='-', linewidth=1, alpha=0.5, zorder=1)
     ax.axvline(x=0, color='gray', linestyle='-', linewidth=1, alpha=0.5, zorder=1)
-    
-    # Styling
+
     if as_fold_change:
         ax.set_xlabel(
             f"{metric_x} Gap (fold change {set_names[1]}/{set_names[0]})", fontweight='bold'
@@ -726,7 +699,6 @@ def plot_generalization_gaps_overall(
             f"{metric_y} Gap", fontweight='bold'
         )
     
-    # Set axis limits
     ax.set_xlim([min_x, max_x])
     ax.set_ylim([min_y, max_y])
 
@@ -748,13 +720,11 @@ def plot_generalization_gaps_overall(
         if 'yticklabels' in axis_secondary_override and axis_secondary_override['yticklabels'] is not None:
             ax.set_yticklabels(list(axis_secondary_override['yticklabels']))
     
-    # Grid
     ax.grid(True, alpha=0.3, linestyle='--', zorder=0)
-    
-    # Create legend organized as: [Cohorts + Average] on first row, [Methods] on second row
+
+    # Legend layout: cohorts + average on row 1, methods on row 2 (via ncol below).
     legend_elements = []
-    
-    # First row: Add cohort colors
+
     from matplotlib.patches import Patch
     for cohort_idx, cohort in enumerate(cohorts):
         legend_elements.append(
@@ -762,13 +732,12 @@ def plot_generalization_gaps_overall(
                   label=cohort, linewidth=1.5)
         )
     
-    # Add average indicator to first row (as rectangle like cohorts)
+    # A Patch, not a marker, to match the cohort legend entries above.
     legend_elements.append(
         Patch(facecolor='black', edgecolor='white', linewidth=1.5,
             label='Average')
     )
-    
-    # Second row: Add methods with their markers
+
     for method_idx, method in enumerate(methods):
         legend_elements.append(
             Line2D([0], [0], marker=marker_styles[method_idx], color='w',
@@ -777,8 +746,7 @@ def plot_generalization_gaps_overall(
                    label=method)
         )
     
-    # Create horizontal legend with items organized in rows
-    n_cohorts_with_avg = n_cohorts + 1  # cohorts + average
+    n_cohorts_with_avg = n_cohorts + 1  # cohorts + the average entry
     ax.legend(handles=legend_elements, 
              loc='upper left', 
              frameon=True, 

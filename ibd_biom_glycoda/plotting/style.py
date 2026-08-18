@@ -43,7 +43,6 @@ def create_rgb_palette(palette_name='okabe_ito'):
     
     palettes_rgb = {
         'okabe_ito': [
-            # Okabe & Ito (2008) - Most widely used colorblind-safe palette
             (0.00, 0.45, 0.70),  # Blue
             (0.90, 0.60, 0.00),  # Orange
             (0.00, 0.60, 0.50),  # Bluish green
@@ -55,7 +54,7 @@ def create_rgb_palette(palette_name='okabe_ito'):
         ],
         
         'tol_bright': [
-            # Paul Tol's Bright qualitative scheme (max 7 colors)
+            # Max 7 distinguishable colors; indices beyond this wrap and repeat.
             (0.27, 0.51, 0.71),  # Blue
             (0.89, 0.10, 0.11),  # Red
             (0.30, 0.69, 0.29),  # Green
@@ -66,7 +65,7 @@ def create_rgb_palette(palette_name='okabe_ito'):
         ],
         
         'tol_muted': [
-            # Paul Tol's Muted qualitative scheme (max 9 colors)
+            # Max 9 distinguishable colors; indices beyond this wrap and repeat.
             (0.20, 0.13, 0.53),  # Indigo
             (0.33, 0.66, 0.41),  # Cyan
             (0.27, 0.67, 0.60),  # Teal
@@ -79,7 +78,7 @@ def create_rgb_palette(palette_name='okabe_ito'):
         ],
         
         'tol_light': [
-            # Paul Tol's Light qualitative scheme (max 9 colors)
+            # Max 9 distinguishable colors; indices beyond this wrap and repeat.
             (0.47, 0.71, 0.84),  # Light blue
             (0.99, 0.80, 0.67),  # Light orange
             (0.60, 0.89, 0.74),  # Light green
@@ -92,7 +91,6 @@ def create_rgb_palette(palette_name='okabe_ito'):
         ],
         
         'seaborn_colorblind': [
-            # Seaborn's default colorblind palette
             (0.00, 0.45, 0.70),  # Blue
             (0.90, 0.62, 0.00),  # Orange
             (0.00, 0.62, 0.45),  # Green
@@ -102,7 +100,6 @@ def create_rgb_palette(palette_name='okabe_ito'):
         ],
         
         'grayscale': [
-            # Grayscale palette for accessibility
             (0.00, 0.00, 0.00),  # Black
             (0.25, 0.25, 0.25),  # Dark gray
             (0.50, 0.50, 0.50),  # Medium gray
@@ -170,11 +167,9 @@ def create_cohort_colors(cohort_names, palette='okabe_ito'):
     >>> # {'IT': (0.0, 0.45, 0.7), 'NL': (0.9, 0.6, 0.0), ...}
     """
     color_list = create_rgb_palette(palette)
-    
-    # Sort cohort names to ensure consistent ordering
+
     sorted_cohorts = sorted(cohort_names)
-    
-    # Create mapping
+
     cohort_colors = {}
     for i, cohort in enumerate(sorted_cohorts):
         cohort_colors[cohort] = color_list[i % len(color_list)]
@@ -204,7 +199,6 @@ def create_subgroup_colors(subgroup_names, palette='okabe_ito'):
     """
     color_list = create_rgb_palette(palette)
 
-    # Sort subgroup names for deterministic assignments across calls
     sorted_subgroups = sorted(subgroup_names)
 
     subgroup_colors = {}
@@ -241,28 +235,19 @@ def create_disease_colors(class_names, palette='okabe_ito'):
     >>> # {'HC': (0.0, 0.6, 0.5), 'CD': (0.9, 0.6, 0.0), 'UC': (0.8, 0.4, 0.0)}
     """
     color_list = create_rgb_palette(palette)
-    
-    # Semantic color mapping based on medical hierarchy
-    # These assignments work well across different colorblind-friendly palettes
+
     if palette == 'okabe_ito':
-        # Okabe-Ito palette semantic mapping
         color_mapping = {
-            # Healthy/Control - Blue/Green tones
             'HC': color_list[2],        # Bluish green
             'Non-IBD': color_list[2],   # Bluish green
             'Control': color_list[0],   # Blue
-            
-            # Intermediate/Functional - Darker tones
             'SC': color_list[0],       # Blue
-
-            # Inflammatory - Orange/Red tones
             'CD': color_list[3],        # Yellow (Crohn's Disease)
             'UC': color_list[5],        # Vermillion (Ulcerative Colitis)
             'IBD': color_list[6]       # Reddish purple (Includes both CD and UC)
         }
-    
+
     elif palette == 'tol_bright':
-        # Tol Bright palette semantic mapping
         color_mapping = {
             'HC': color_list[0],        # Blue
             'Non-IBD': color_list[2],   # Green
@@ -275,7 +260,6 @@ def create_disease_colors(class_names, palette='okabe_ito'):
         }
     
     elif palette == 'tol_muted':
-        # Tol Muted palette semantic mapping
         color_mapping = {
             'HC': color_list[2],        # Teal
             'Non-IBD': color_list[3],   # Green
@@ -288,7 +272,6 @@ def create_disease_colors(class_names, palette='okabe_ito'):
         }
     
     elif palette == 'wong':
-        # Wong palette semantic mapping
         color_mapping = {
             'HC': color_list[3],        # Bluish green
             'Non-IBD': color_list[3],   # Bluish green
@@ -301,7 +284,6 @@ def create_disease_colors(class_names, palette='okabe_ito'):
         }
     
     else:
-        # Generic fallback for other palettes
         color_mapping = {
             'HC': color_list[0],
             'Non-IBD': color_list[0],
@@ -312,14 +294,13 @@ def create_disease_colors(class_names, palette='okabe_ito'):
             'UC': color_list[4] if len(color_list) > 4 else color_list[2],
             'Unknown': color_list[-1],
         }
-    
-    # Create mapping for provided classes
+
     disease_colors = {}
     for class_name in class_names:
         if class_name in color_mapping:
             disease_colors[class_name] = color_mapping[class_name]
         else:
-            # Fallback: assign sequentially based on sorted order
+            # Not in the semantic mapping: assign by sorted position instead.
             sorted_classes = sorted(class_names)
             idx = sorted_classes.index(class_name)
             disease_colors[class_name] = color_list[idx % len(color_list)]
@@ -354,33 +335,23 @@ def create_metric_colors(metric_names, palette='okabe_ito'):
     >>> colors = create_metric_colors(metrics)
     """
     color_list = create_rgb_palette(palette)
-    
-    # Semantic color mapping for common metrics
+
     if palette == 'okabe_ito':
         color_mapping = {
-            # Primary performance metrics
             'AUROC': color_list[0],     # Blue
             'AUC': color_list[0],       # Blue
             'Accuracy': color_list[2],  # Bluish green
             'ACC': color_list[2],       # Bluish green
-            
-            # Correlation/agreement metrics
             'MCC': color_list[1],       # Orange
             'Kappa': color_list[1],     # Orange
-            
-            # Loss metrics
             'LogLoss': color_list[5],   # Vermillion
             'Brier': color_list[6],     # Reddish purple
             'Loss': color_list[5],      # Vermillion
-            
-            # Classification metrics
             'F1': color_list[3],        # Yellow
             'Precision': color_list[4], # Sky blue
             'Recall': color_list[6],    # Reddish purple
             'Sensitivity': color_list[6],
             'Specificity': color_list[4],
-            
-            # Other
             'R2': color_list[0],        # Blue
             'RMSE': color_list[5],      # Vermillion
             'MAE': color_list[5],       # Vermillion
@@ -429,7 +400,6 @@ def create_metric_colors(metric_names, palette='okabe_ito'):
         }
     
     else:
-        # Generic fallback
         color_mapping = {
             'AUROC': color_list[0],
             'AUC': color_list[0],
@@ -449,14 +419,13 @@ def create_metric_colors(metric_names, palette='okabe_ito'):
             'RMSE': color_list[3],
             'MAE': color_list[4],
         }
-    
-    # Create mapping for provided metrics
+
     metric_colors = {}
     for metric in metric_names:
         if metric in color_mapping:
             metric_colors[metric] = color_mapping[metric]
         else:
-            # Fallback: assign sequentially based on sorted order
+            # Not in the semantic mapping: assign by sorted position instead.
             sorted_metrics = sorted(metric_names)
             idx = sorted_metrics.index(metric)
             metric_colors[metric] = color_list[idx % len(color_list)]
@@ -666,7 +635,6 @@ def create_color_mapping(names, category='generic', palette='okabe_ito'):
     elif category == 'model':
         return create_model_colors(names, palette)
     elif category == 'generic':
-        # Generic sequential assignment based on sorted order for consistency
         color_list = create_rgb_palette(palette)
         sorted_names = sorted(names)
         return {name: color_list[sorted_names.index(name) % len(color_list)] 
@@ -741,7 +709,6 @@ def generate_semantic_colors(palette='okabe_ito', preview=True):
     >>> fig.savefig('semantic_colors_preview.png', dpi=300)
     """
     
-    # Define test sets
     diseases = ['HC', 'SC', 'Non-IBD', 'CD', 'UC', 'IBD']
     metrics = ['AUROC', 'AUPRC', 'LogLoss', 'Brier']
     cohorts = ['UK', 'US', 'IT', 'NL']
@@ -749,7 +716,6 @@ def generate_semantic_colors(palette='okabe_ito', preview=True):
     processors = ['Raw', 'CLR', 'GlyCmp']
     models = ['LR', 'XB']
     
-    # Get color mappings
     disease_colors = create_disease_colors(diseases, palette=palette)
     metric_colors = create_metric_colors(metrics, palette=palette)
     cohort_colors = create_cohort_colors(cohorts, palette=palette)
@@ -757,7 +723,6 @@ def generate_semantic_colors(palette='okabe_ito', preview=True):
     processor_colors = create_processor_colors(processors, palette=palette)
     model_colors = create_model_colors(models, palette=palette)
     
-    # Create figure
     fig, axes = plt.subplots(6, 1, figsize=(8, 8))
     
     categories = [
@@ -770,12 +735,10 @@ def generate_semantic_colors(palette='okabe_ito', preview=True):
     ]
     
     for ax, (title, items, colors) in zip(axes, categories):
-        # Plot color swatches
         for i, item in enumerate(items):
             color = colors[item]
             ax.add_patch(plt.Rectangle((i, 0), 1, 1, facecolor=color, 
                                        edgecolor='white', linewidth=2))
-            # Add label
             ax.text(i + 0.5, 0.5, item, ha='center', va='center', 
                    fontsize=11, fontweight='bold', color='white',
                    bbox=dict(boxstyle='round', facecolor='black', alpha=0.3))
@@ -833,7 +796,6 @@ def validate_color_consistency(names_list1, names_list2, category='generic',
     colors1 = create_color_mapping(names_list1, category=category, palette=palette)
     colors2 = create_color_mapping(names_list2, category=category, palette=palette)
     
-    # Find common names
     common_names = set(names_list1) & set(names_list2)
     
     differences = {}
@@ -880,31 +842,25 @@ def rcparams_aga(palette='tol_muted', set_color_cycle=True):
     >>> rcparams_aga(set_color_cycle=False)
     """
     mpl.style.use('default')
-    
-    # Set color cycle if requested
+
     if set_color_cycle:
         colors_rgb = create_rgb_palette(palette)
-        # Convert to hex for matplotlib
         colors_hex = [mpl.colors.rgb2hex(color) for color in colors_rgb]
         plt.rcParams['axes.prop_cycle'] = plt.cycler(color=colors_hex)
-    
+
     plt.rcParams.update({
-        # Output format: Use PDF or EPS for vector quality
-        'savefig.format': 'pdf',
-        
-        # Font settings - MUST be sans-serif per requirements
+        'savefig.format': 'pdf',  # Vector format required by AGA guidelines
+
         'font.size': 9,  # Default body text: 8-10 point
         'font.family': 'sans-serif',
         'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
         'pdf.fonttype': 42,  # TrueType fonts (editable in Adobe Illustrator)
         'ps.fonttype': 42,
         'text.usetex': False,
-        
-        # Line and marker styles
+
         'lines.linewidth': 1.5,
         'lines.markersize': 4,
-        
-        # Tick parameters
+
         'xtick.direction': 'out',
         'xtick.top': False,
         'xtick.bottom': True,
@@ -915,7 +871,7 @@ def rcparams_aga(palette='tol_muted', set_color_cycle=True):
         'xtick.major.pad': 3,
         'xtick.major.size': 3,
         'xtick.major.width': 1,
-        
+
         'ytick.direction': 'out',
         'ytick.right': False,
         'ytick.left': True,
@@ -927,7 +883,6 @@ def rcparams_aga(palette='tol_muted', set_color_cycle=True):
         'ytick.major.size': 3,
         'ytick.major.width': 1,
 
-        # Axes parameters
         'axes.grid': False,
         'axes.edgecolor': 'black',
         'axes.facecolor': 'white',
@@ -938,22 +893,19 @@ def rcparams_aga(palette='tol_muted', set_color_cycle=True):
         'axes.labelsize': 9,  # 8-10 point
         'axes.linewidth': 1,
         'axes.labelpad': 3,
-        
-        # Legend parameters
+
         'legend.fontsize': 9,
         'legend.frameon': True,
         'legend.framealpha': 1.0,
         'legend.edgecolor': 'black',
         'legend.fancybox': False,
-        
-        # Figure parameters
+
         'figure.facecolor': 'white',
-        'figure.dpi': 100,  # Screen DPI
+        'figure.dpi': 100,  # Screen DPI; savefig.dpi governs exported files
         'figure.autolayout': False,
-        
-        # Save figure parameters - HIGH RESOLUTION
+
         'savefig.transparent': False,
-        'savefig.dpi': 300,  # 300 PPI minimum for all output
+        'savefig.dpi': 300,  # 300 PPI minimum required by AGA guidelines
         'savefig.bbox': 'tight',
         'savefig.pad_inches': 0.05,
     })
@@ -992,12 +944,11 @@ def create_figure_with_panels(figsize=(6.5, 8), layout=(2, 1), sharex=False, sha
     fig, axes = plt.subplots(rows, cols, figsize=figsize, sharex=sharex, sharey=sharey)
     axes = np.atleast_1d(axes).flatten()
     
-    # Add panel labels (16pt Arial bold as required)
+    # 16pt Arial bold per AGA panel-label requirement.
     panel_labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
     for idx, ax in enumerate(axes):
         if idx < len(panel_labels):
-            # Position at top-left, outside the plot area
-                 ax.text(-0.20, 1.05, panel_labels[idx], 
+                 ax.text(-0.20, 1.05, panel_labels[idx],
                    transform=ax.transAxes,
                    fontsize=16, 
                    fontweight='bold',
@@ -1036,29 +987,23 @@ def convert_to_cmyk_tiff(input_file, output_file=None, dpi=300):
     input_file = Path(input_file)
     
     if output_file is None:
-        # Create output filename
         output_file = input_file.with_name(
             input_file.stem + '_cmyk'
         ).with_suffix('.tiff')
     else:
         output_file = Path(output_file)
     
-    # Open and prepare image
     img = Image.open(input_file)
-    
-    # Handle transparency (if present)
+
     if img.mode == 'RGBA':
-        # Create white background
         background = Image.new('RGB', img.size, (255, 255, 255))
         background.paste(img, mask=img.split()[3])
         img = background
     elif img.mode != 'RGB':
         img = img.convert('RGB')
     
-    # Convert to CMYK
     img_cmyk = img.convert('CMYK')
-    
-    # Save as TIFF with compression
+
     img_cmyk.save(
         output_file, 
         'TIFF', 
@@ -1102,16 +1047,14 @@ def save_figure_aga_compliant(fig, filename, dpi=500, format='pdf',
         print("Warning: DPI is below 400 PPI requirement. Adjusting to 400.")
         dpi = 400
     
-    # Ensure figure size complies
     figsize = fig.get_size_inches()
     if figsize[0] > 7 or figsize[1] > 9:
         print(f"Warning: Figure size {figsize} exceeds maximum (7, 9) inches")
     
-    # Create path
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     
-    # Create RGB version first (required for CMYK conversion)
+    # CMYK conversion reads from an RGB file on disk, so it is saved first.
     rgb_path = path / f"{filename}_rgb.{format}"
     fig.savefig(
         rgb_path,
@@ -1123,11 +1066,9 @@ def save_figure_aga_compliant(fig, filename, dpi=500, format='pdf',
         edgecolor='none'
     )
 
-    # Convert RGB to CMYK TIFF
     cmyk_path = path / f"{filename}.tiff"
     convert_to_cmyk_tiff(rgb_path, cmyk_path, dpi=dpi)
 
-    # Keep or delete outputs according to save flags
     if save_rgb:
         rgb_file = str(rgb_path)
         print(f"✓ Saved RGB")

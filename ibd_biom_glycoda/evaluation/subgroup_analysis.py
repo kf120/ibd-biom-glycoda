@@ -140,10 +140,7 @@ def calculate_subgroup_performance(true_labels, pred_proba_labels, subgroup_labe
             true_labels[mask], pred_proba_labels[mask], metrics
         )
         
-        # Ensure 'group' is converted to a scalar type, not numpy array
         group_value = group.item() if isinstance(group, np.ndarray) else group
-
-        # Use subgroup_names if provided, otherwise use the group number
         group_name_label = subgroup_names.get(group_value, group_value) if subgroup_names else group_value
         
         performance_dict[group_name_label] = subgroup_metrics
@@ -175,9 +172,7 @@ def calculate_intersection_performance(true_labels, pred_proba_labels, age_label
     unique_sex = np.unique(sex_labels)
     
     for age in unique_age:
-        # Convert age value to a scalar if needed.
         age_value = age.item() if isinstance(age, np.ndarray) else age
-        # Use age subgroup names if provided.
         age_label = age_subgroup_names.get(age_value, age_value) if age_subgroup_names else age_value
         performance_dict[age_label] = {}
         
@@ -257,8 +252,7 @@ def prepare_loco_subgroup_data(
     >>> print(summary.head())
     """
     records = []
-    
-    # Extract all cohorts
+
     cohorts = list(subgroup_analyses_loco.keys())
     
     for cohort in cohorts:
@@ -266,12 +260,10 @@ def prepare_loco_subgroup_data(
             if split not in subgroup_analyses_loco[cohort]:
                 continue
             
-            # Get age groups from the first cohort/split
             age_sex_data = subgroup_analyses_loco[cohort][split].get('age_sex', {})
             
             for age_group in age_sex_data.keys():
                 for sex in age_sex_data[age_group].keys():
-                    # Each pipeline
                     for pipeline, metrics in age_sex_data[age_group][sex].items():
                         if metric not in metrics:
                             continue
@@ -289,11 +281,9 @@ def prepare_loco_subgroup_data(
                         })
     
     detail_df = pd.DataFrame(records)
-    
-    # Create subgroup label
+
     detail_df['Subgroup'] = detail_df['Age'].astype(str) + ' | ' + detail_df['Sex'].astype(str)
     
-    # Compute summary per pipeline
     summary_records = []
     
     for (cohort, split, pipeline), grp in detail_df.groupby(['Cohort', 'Split', 'Pipeline']):
@@ -301,13 +291,12 @@ def prepare_loco_subgroup_data(
         sems = grp['SEM'].values
         subgroups = grp['Subgroup'].values
         
-        # Overall mean (simple average across subgroups)
+        # Unweighted mean across subgroups.
         overall_mean = np.nanmean(performances)
-        
-        # Propagate uncertainty (sum of variances)
+
+        # SEM combination assumes independence across subgroups.
         overall_sem = np.sqrt(np.nansum(sems**2)) / len(sems)
-        
-        # Worst subgroup
+
         if len(performances) > 0 and not np.all(np.isnan(performances)):
             worst_idx = np.nanargmin(performances)
             worst_subgroup = subgroups[worst_idx]
@@ -406,7 +395,6 @@ def prepare_generalization_data_all_subgroups(
     if any(not name for name in set_names):
         raise ValueError("sets entries must be non-empty strings.")
     
-    # Add Preprocessor and Estimator columns if not present
     if 'Preprocessor' not in df_metric1_detail.columns:
         df_metric1_detail[['Preprocessor', 'Estimator']] = df_metric1_detail['Pipeline'].apply(
             lambda s: pd.Series(parse_pipeline(s))
@@ -417,8 +405,7 @@ def prepare_generalization_data_all_subgroups(
         )
     
     mode = 'preprocessing' if group_by == 'Preprocessor' else 'model'
-    
-    # Get all available subgroups if not specified
+
     if subgroups is None:
         subgroups = df_metric1_detail['Subgroup'].unique().tolist()
     
@@ -427,36 +414,30 @@ def prepare_generalization_data_all_subgroups(
 
     metric1_name, metric2_name = metric_names
 
-    # Merge the two requested metric frames
     df_merged = df_metric1_detail.merge(
         df_metric2_detail,
         on=['Cohort', 'Split', 'Pipeline', 'Age', 'Sex', 'Subgroup', 'Preprocessor', 'Estimator'],
         suffixes=('_metric1', '_metric2')
     )
     
-    # Rename Mean columns to match expected format
     df_merged = df_merged.rename(columns={
         'Mean_metric1': f'{metric1_name} Mean',
         'Mean_metric2': f'{metric2_name} Mean'
     })
     
-    # Apply filter if specified
     if filter_value is not None:
         filter_col = 'Estimator' if group_by == 'Preprocessor' else 'Preprocessor'
         df_merged = df_merged[df_merged[filter_col] == filter_value]
     
-    # Filter to specified subgroups
     df_merged = df_merged[df_merged['Subgroup'].isin(subgroups)]
     
     # Build nested dictionary: {method: {subgroup: {cohort: {metrics}}}}
     results_dict = {}
     
-    # Group by the specified column (method/preprocessing)
     for method in df_merged[group_by].unique():
         df_method = df_merged[df_merged[group_by] == method]
         results_dict[method] = {}
         
-        # Group by subgroup
         for subgroup in subgroups:
             df_subgroup = df_method[df_method['Subgroup'] == subgroup]
             
@@ -465,7 +446,6 @@ def prepare_generalization_data_all_subgroups(
                 
             results_dict[method][subgroup] = {}
             
-            # Group by cohort
             for cohort in df_subgroup['Cohort'].unique():
                 df_cohort = df_subgroup[df_subgroup['Cohort'] == cohort]
                 
@@ -537,7 +517,6 @@ def run_full_generalization_gap_analysis_subgroups(
         Array/sequence of unique subgroups from `df_metric1_detail['Subgroup'].unique()`.
     """
 
-    # Prepare detailed subgroup data for both metrics
     df_metric1_detail, _ = prepare_loco_subgroup_data(
         subgroup_analyses_loco_test_cohorts,
         metric=metrics[0],
@@ -550,11 +529,9 @@ def run_full_generalization_gap_analysis_subgroups(
         sets=sets,
     )
 
-    # Get unique subgroups (for information/inspection)
     subgroups_available = df_metric1_detail["Subgroup"].unique()
     subgroups_to_use = subgroups if subgroups is not None else None
 
-    # Run subgroup generalization analysis per model
     results_dicts_subgroup = {}
     mode = None
 
@@ -643,10 +620,8 @@ def plot_generalization_gaps_subgroups(
     if any(not name for name in set_names):
         raise ValueError("sets entries must be non-empty strings.")
     
-    # Markers for different methods/models
     marker_styles = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
-    
-    # Get methods/models and subgroups
+
     methods = list(results_dict.keys())
     n_methods = len(methods)
     
@@ -656,19 +631,18 @@ def plot_generalization_gaps_subgroups(
     if n_methods == 0:
         raise ValueError("results_dict is empty; nothing to plot.")
     
-    # Get all subgroups (from first method)
+    # Assumes every method has the same subgroups.
     subgroups = list(results_dict[methods[0]].keys())
     n_subgroups = len(subgroups)
 
     if n_subgroups == 0:
         raise ValueError("results_dict does not contain any subgroups to visualize.")
 
-    # Ensure at least one cohort entry exists
     first_cohort_keys = list(results_dict[methods[0]][subgroups[0]].keys())
     if len(first_cohort_keys) == 0:
         raise ValueError("results_dict does not contain any cohort entries to visualize.")
 
-    # Determine metric names from the first cohort entry
+    # Assumes every cohort/subgroup/method has the same metric keys.
     sample_results = results_dict[methods[0]][subgroups[0]][first_cohort_keys[0]]
     metric_order = []
     for key in sample_results.keys():
@@ -708,7 +682,6 @@ def plot_generalization_gaps_subgroups(
             return (ratio - 1.0) if low_is_better else 1.0 - ratio
         return (comparison - reference) if low_is_better else (reference - comparison)
     
-    # Color scheme for subgroups
     if subgroup_palette is None:
         subgroup_colors = list(plt.cm.get_cmap('tab10', n_subgroups).colors)
     elif isinstance(subgroup_palette, dict):
@@ -726,29 +699,24 @@ def plot_generalization_gaps_subgroups(
         subgroup_colors = list(subgroup_palette[:n_subgroups])
 
     subgroup_color_map = dict(zip(subgroups, subgroup_colors))
-    
-    # Create figure and axes if not provided
+
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
     else:
         fig = None
     
-    # Store all gaps for axis limits
-    all_x_gaps = []
+    all_x_gaps = []  # Collected for axis-limit padding, below.
     all_y_gaps = []
 
     x_lower_better = is_lower_better(metric_x)
     y_lower_better = is_lower_better(metric_y)
     
-    # Process each method/model
     for method_idx, method in enumerate(methods):
         marker = marker_styles[method_idx]
-        
-        # Process each subgroup
+
         for subgroup_idx, subgroup in enumerate(subgroups):
             cohort_data = results_dict[method][subgroup]
-            
-            # Compute gaps for each cohort, then average
+
             x_gaps = []
             y_gaps = []
 
@@ -770,7 +738,6 @@ def plot_generalization_gaps_subgroups(
                 x_gaps.append(gap_x)
                 y_gaps.append(gap_y)
             
-            # Compute average across cohorts for this method+subgroup
             avg_x_gap = np.nanmean(x_gaps)
             avg_y_gap = np.nanmean(y_gaps)
 
@@ -780,7 +747,6 @@ def plot_generalization_gaps_subgroups(
             if np.isnan(avg_x_gap) or np.isnan(avg_y_gap):
                 continue
 
-            # Plot subgroup average point
             ax.scatter(avg_x_gap, avg_y_gap,
                       s=60, alpha=0.85,
                       color=subgroup_color_map[subgroup],
@@ -788,7 +754,6 @@ def plot_generalization_gaps_subgroups(
                       edgecolor='black', linewidth=1.5,
                       zorder=2)
     
-    # Determine axis limits with padding
     all_x_gaps = np.array(all_x_gaps, dtype=float)
     all_y_gaps = np.array(all_y_gaps, dtype=float)
 
@@ -798,16 +763,15 @@ def plot_generalization_gaps_subgroups(
     if valid_x.size == 0 or valid_y.size == 0:
         raise ValueError("Gaps contain only NaN values; cannot determine axis limits.")
 
+    # 20% padding plus a small fixed margin.
     max_x = max(valid_x.max(), 0) * 1.2 + 0.01
     max_y = max(valid_y.max(), 0) * 1.2 + 0.01
     min_x = min(valid_x.min(), 0) * 1.2 - 0.01
     min_y = min(valid_y.min(), 0) * 1.2 - 0.01
-    
-    # Add reference lines
+
     ax.axhline(y=0, color='gray', linestyle='-', linewidth=1, alpha=0.5, zorder=1)
     ax.axvline(x=0, color='gray', linestyle='-', linewidth=1, alpha=0.5, zorder=1)
-    
-    # Styling
+
     if as_fold_change:
         ax.set_xlabel(
             f"{metric_x} Gap (fold change {set_names[1]}/{set_names[0]})", fontweight='bold'
@@ -823,7 +787,6 @@ def plot_generalization_gaps_subgroups(
             f"{metric_y} Gap", fontweight='bold'
         )
     
-    # Set axis limits
     ax.set_xlim([min_x, max_x])
     ax.set_ylim([min_y, max_y])
 
@@ -845,21 +808,18 @@ def plot_generalization_gaps_subgroups(
         if 'yticklabels' in axis_secondary_override and axis_secondary_override['yticklabels'] is not None:
             ax.set_yticklabels(list(axis_secondary_override['yticklabels']))
     
-    # Grid
     ax.grid(True, alpha=0.3, linestyle='--', zorder=0)
-    
-    # Create legend organized in two rows: [Subgroups] on first row, [Methods] on second row
+
+    # Legend layout: subgroups on row 1, methods on row 2 (via ncol below).
     legend_elements_subgroups = []
     legend_elements_methods = []
-    
-    # First row: Add subgroup colors
+
     for subgroup_idx, subgroup in enumerate(subgroups):
         legend_elements_subgroups.append(
             Patch(facecolor=subgroup_color_map[subgroup], edgecolor='black',
                   label=subgroup)
         )
     
-    # Second row: Add methods with their markers
     for method_idx, method in enumerate(methods):
         legend_elements_methods.append(
             Line2D([0], [0], marker=marker_styles[method_idx], color='w',
@@ -868,11 +828,9 @@ def plot_generalization_gaps_subgroups(
                    label=method)
         )
     
-    # Combine legend elements
     legend_elements = legend_elements_subgroups + legend_elements_methods
-    
-    # Create legend with proper row organization
-    # ncol should be max of n_subgroups and n_methods for proper alignment
+
+    # max(n_subgroups, n_methods) so both legend rows fit without wrapping.
     ncol = max(n_subgroups, n_methods)
     ax.legend(handles=legend_elements, 
              loc='upper left', 
@@ -1114,7 +1072,6 @@ def plot_between_test_cohort_metrics_subgroup(
     created_new_axes = ax is None
     ax_primary.set_xlabel('Feature Representation', fontweight='bold')
 
-    # Add title
     title_text = f"{target_group}"
     if created_new_axes:
         fig.suptitle(title_text, fontweight='bold')
@@ -1156,8 +1113,7 @@ def generate_strata_summary(df, disease_col='DISEASE', age_col='Age', sex_col='S
     """
     
     df_plot = df.copy()
-    
-    # Create age categories
+
     if age_ranges is None:
         df_plot['Age_Category'] = pd.qcut(df_plot[age_col], q=3, 
                                            labels=['Young', 'Middle', 'Old'],
@@ -1167,10 +1123,8 @@ def generate_strata_summary(df, disease_col='DISEASE', age_col='Age', sex_col='S
         labels = [r[2] for r in age_ranges]
         df_plot['Age_Category'] = pd.cut(df_plot[age_col], bins=bins, labels=labels)
     
-    # Create age-sex strata
     df_plot['Strata'] = df_plot['Age_Category'].astype(str) + '_' + df_plot[sex_col]
-    
-    # Handle domain pooling
+
     if test_cohort is not None:
         df_plot['Domain'] = df_plot[cohort_col].apply(
             lambda x: test_cohort if x == test_cohort else 'Pooled'
@@ -1180,20 +1134,17 @@ def generate_strata_summary(df, disease_col='DISEASE', age_col='Age', sex_col='S
         df_plot['Domain'] = df_plot[cohort_col]
         group_col = 'Domain'
     
-    # Get counts
     counts = df_plot.groupby([group_col, disease_col, 'Strata']).size().unstack(fill_value=0)
-    
-    # Calculate ratios (proportions within each domain-disease combination)
+
+    # Row-wise proportions: each domain-disease combination sums to 100%.
     ratios = np.round(100 * counts.div(counts.sum(axis=1), axis=0), 1)
-    
-    # Create readable tables
+
     ratio_table = ratios.reset_index()
     ratio_table.columns.name = None
     
     counts_table = counts.reset_index()
     counts_table.columns.name = None
-    
-    # Plot setup
+
     domains_list = df_plot[group_col].unique()
     diseases = df_plot[disease_col].unique()
     strata = counts.columns
@@ -1224,7 +1175,6 @@ def generate_strata_summary(df, disease_col='DISEASE', age_col='Age', sex_col='S
             bars = ax.bar(x + i * bar_width, heights, bar_width, bottom=bottoms,
                          label=stratum if i == 0 else "", color=colors[j])
             
-            # Add proportion labels on bars
             for k, (bar, height, prop) in enumerate(zip(bars, heights, proportions)):
                 if height > 0 and prop >= 5:  # Only show if proportion >= 5%
                     label_y = bottoms[k] + height / 2
@@ -1234,7 +1184,6 @@ def generate_strata_summary(df, disease_col='DISEASE', age_col='Age', sex_col='S
             
             bottoms += np.array(heights)
     
-    # Customize
     ax.set_xlabel(group_col, fontsize=12, fontweight='bold')
     ax.set_ylabel('Count', fontsize=12, fontweight='bold')
     ax.set_title('Age-Sex Strata Distribution', fontsize=14, fontweight='bold')
@@ -1242,7 +1191,6 @@ def generate_strata_summary(df, disease_col='DISEASE', age_col='Age', sex_col='S
     ax.set_xticklabels(domains_list)
     ax.legend(title='Age-Sex Strata', bbox_to_anchor=(1.05, 1), loc='upper left')
     
-    # Add disease labels
     for i, disease in enumerate(diseases):
         for j, domain_x in enumerate(x):
             ax.text(domain_x + i * bar_width, -ax.get_ylim()[1] * 0.05, 
@@ -1254,7 +1202,6 @@ def generate_strata_summary(df, disease_col='DISEASE', age_col='Age', sex_col='S
     else:
         plt.close()
     
-    # Print summary
     print("\n=== COUNTS ===")
     print(counts_table.to_string(index=False))
     print("\n=== PROPORTIONS ===")

@@ -49,7 +49,6 @@ def create_demographic_subgroup_names(age_ranges, cohort_locations):
     dict
         Dictionary with 'age', 'sex', and 'location' keys mapping to name dictionaries
     """
-    # Age group names
     age_names = {}
     for i in range(len(age_ranges) - 1):
         if i == 0:
@@ -58,8 +57,7 @@ def create_demographic_subgroup_names(age_ranges, cohort_locations):
             age_names[i] = f"{int(age_ranges[i])}-{int(age_ranges[i+1])}"
         else:
             age_names[i] = f">{int(age_ranges[i])}"
-    
-    # Sex group names
+
     sex_names = {0: 'M', 1: 'F'}
     
     # Location names. ``extract_cohort_features`` returns a flat list of category
@@ -109,21 +107,18 @@ def build_results_dict(estimator, preprocessor, data, predictions, metadata):
         'model': estimator,
         'processor': preprocessor,
 
-        # Training predictions
         'train_true': np.array(data['train']['y']),
         'train_pred': np.array(predictions['train']),
 
-        # Validation predictions
         'val_in_true': np.array(data['val_in']['y']),
         'val_in_pred': np.array(predictions['val_in']),
 
-        # Test predictions
         'test_in_true': np.array(data['test_in']['y']),
         'test_in_pred': np.array(predictions['test_in']),
         'test_out_true': np.array(data['test_out']['y']),
         'test_out_pred': np.array(predictions['test_out']),
 
-        # Binned covariates, needed for post-hoc subgroup metrics
+        # Retained for post-hoc subgroup metrics.
         'Z_train_bin': data['train']['Z_bin'],
         'V_train': data['train']['V'],
         'Z_val_in_bin': data['val_in']['Z_bin'],
@@ -133,7 +128,6 @@ def build_results_dict(estimator, preprocessor, data, predictions, metadata):
         'Z_test_out_bin': data['test_out']['Z_bin'],
         'V_test_out': data['test_out']['V'],
 
-        # Metadata
         'age_ranges': metadata['age_ranges'],
         'cohort_locations': metadata['cohort_locations'],
     }
@@ -287,18 +281,15 @@ def fit_and_predict(estimator, X_train, y_train, X_val_in, y_val_in, X_test_in, 
     dict
         Probability predictions keyed by split name.
     """
-    # Check estimator type
     is_xgboost = isinstance(estimator, XGBClassifier)
 
     if is_xgboost:
-        # XGBoost with eval_set for early stopping and monitoring
         fit_params = {}
-        
-        # Add sample weights if provided
+
         if sample_weight is not None:
             fit_params['sample_weight'] = sample_weight
-        
-        # Add eval_set if validation data is provided
+
+        # eval_set enables XGBoost early stopping and training-progress monitoring.
         if X_val_in is not None and y_val_in is not None:
             fit_params['eval_set'] = [(X_train, y_train), (X_val_in, y_val_in)]
             fit_params['verbose'] = False
@@ -306,13 +297,11 @@ def fit_and_predict(estimator, X_train, y_train, X_val_in, y_val_in, X_test_in, 
         estimator.fit(X_train, y_train, **fit_params)
     
     else:
-        # Standard estimator
         if sample_weight is not None:
             estimator.fit(X_train, y_train, sample_weight=sample_weight)
         else:
             estimator.fit(X_train, y_train)
-    
-    # Standard predictions
+
     predictions = {
         'train': estimator.predict_proba(X_train),
         'val_in': estimator.predict_proba(X_val_in),
@@ -347,10 +336,8 @@ def preprocess_fold_data(preprocessor, data_dict, seed, include_covariates=True)
     """
     seed_everything(seed)
 
-    # Check flags
     use_sample_weights = data_dict.get('use_sample_weights', True)
 
-    # Unpack data into organized structure
     data = {
         'train': unpack_train_data(data_dict),
         'val_in': unpack_validation_data(data_dict),
@@ -359,7 +346,7 @@ def preprocess_fold_data(preprocessor, data_dict, seed, include_covariates=True)
     }
     metadata = unpack_metadata(data_dict)
 
-    # Extract sample weights (consumed by fit_and_predict below)
+    # Consumed by fit_and_predict, below.
     sample_weights = {
         'train': data_dict.get('sample_weights_train') if use_sample_weights else None,
         'val_in': data_dict.get('sample_weights_val_in') if use_sample_weights else None,
@@ -367,7 +354,6 @@ def preprocess_fold_data(preprocessor, data_dict, seed, include_covariates=True)
         'test_out': data_dict.get('sample_weights_test_out') if use_sample_weights else None
     }
 
-    # Preprocess all splits
     X_preprocessed = preprocess_all_splits(
         preprocessor,
         train_X=data['train']['X'],
@@ -383,7 +369,6 @@ def preprocess_fold_data(preprocessor, data_dict, seed, include_covariates=True)
         else:
             X_preprocessed[split_name] = np.asarray(split_matrix)
 
-    # Optionally augment with covariates
     if include_covariates:
         X_final = augment_with_covariates(
             X_preprocessed,
@@ -429,7 +414,6 @@ def fit_pipeline_experiment(prepared, estimator, seed):
     X_final = prepared['X_final']
     sample_weights = prepared['sample_weights']
 
-    # Fit estimator with sample weights, generate predictions
     predictions = fit_and_predict(
         estimator,
         X_train=X_final['train'],
@@ -441,7 +425,6 @@ def fit_pipeline_experiment(prepared, estimator, seed):
         sample_weight=sample_weights['train']
     )
 
-    # Retain inputs needed for downstream subgroup metrics.
     return build_results_dict(
         estimator=estimator,
         preprocessor=prepared['preprocessor'],

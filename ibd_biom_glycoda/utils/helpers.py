@@ -51,8 +51,7 @@ def preprocess_data(df, bin_edges=None, fit_binning=False):
     
     ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
     V_df = ohe.fit_transform(V_df)
-    
-    # Convert to numpy arrays
+
     X = X_df.to_numpy()
     Z = Z_df.to_numpy()
     y = y_df.to_numpy()
@@ -73,23 +72,17 @@ def drop_low_abundant_GPs(df, threshold=2.0, min_samples=0.5):
     Returns:
     pd.DataFrame: Processed DataFrame with low abundant GPs dropped and remaining GPs renormalized
     """
-    # Identify coda columns based on the presence of specific patterns
     coda_patterns = ["GP", "A1", "A2", "M5"]
     gp_columns = [col for col in df.columns if any(pattern in col for pattern in coda_patterns)]
 
     df_processed = df.copy()
-    
-    # Calculate the proportion of samples above threshold for each GP column
+
     above_threshold = (df_processed[gp_columns] > threshold).mean()
-    
-    # Identify columns to keep (those with proportion above threshold greater than min_samples)
     columns_to_keep = above_threshold[above_threshold > min_samples].index.tolist()
-    
-    # Drop low abundant GP columns
+
     columns_to_drop = [col for col in gp_columns if col not in columns_to_keep]
     df_processed.drop(columns=columns_to_drop, inplace=True)
-    
-    # Renormalize remaining GP columns to sum to 100%
+
     gp_columns_kept = [col for col in columns_to_keep if col in df_processed.columns]
     row_sums = df_processed[gp_columns_kept].sum(axis=1)
     df_processed[gp_columns_kept] = df_processed[gp_columns_kept].div(row_sums, axis=0) * 100

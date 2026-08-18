@@ -36,12 +36,10 @@ def compute_ovr_metrics(y_true, y_pred, n_classes):
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)
     per_class_metrics = {}
-    
-    # Only evaluate on classes actually present
+
     present = [cls for cls in range(n_classes) if cls in y_true]
-    
+
     for cls in present:
-        # Binarize for one-vs-rest
         true_bin = (y_true == cls).astype(int)
         pred_bin = (y_pred == cls).astype(int)
         
@@ -87,18 +85,15 @@ def compute_macro_avg_metrics(y_true, y_pred, n_classes):
     dict
         Macro-averaged threshold metrics across observed classes.
     """
-    # Get per-class metrics
     per_class = compute_ovr_metrics(y_true, y_pred, n_classes)
-    
-    # Macro-average over present classes
+
     metrics_sum = {key: 0.0 for key in next(iter(per_class.values()))}
     n_present = len(per_class)
-    
+
     for cls_metrics in per_class.values():
         for key, val in cls_metrics.items():
             metrics_sum[key] += val
-    
-    # Divide by number of classes present to get macro-average
+
     macro_metrics = {key: metrics_sum[key] / n_present for key in metrics_sum}
     return macro_metrics
 
@@ -567,11 +562,9 @@ def compute_scoring_metrics(
     need_model_based = 'ModelBasedAUROC' in requested
     need_threshold = bool(requested & THRESHOLD_METRIC_NAMES)
 
-    # Get unique classes in test set
     test_classes = np.unique(y_true)
     n_test_classes = len(test_classes)
 
-    # Infer model classes if not provided
     if model_classes is None:
         n_model_classes = y_pred_proba.shape[1] if y_pred_proba.ndim > 1 else 2
         model_classes = np.arange(n_model_classes)
@@ -579,7 +572,6 @@ def compute_scoring_metrics(
         model_classes = np.array(model_classes)
         n_model_classes = len(model_classes)
 
-    # Check if all test classes are in model classes
     if not np.all(np.isin(test_classes, model_classes)):
         raise ValueError(
             f"Test set contains classes {test_classes} not present in "
@@ -594,20 +586,18 @@ def compute_scoring_metrics(
     cal_intercept = cal_slope = model_based_auroc = np.nan
 
     if n_test_classes > 2 or n_model_classes > 2:
-        # Multiclass case
-
-        # Align predictions with test classes
         class_indices = np.array([np.where(model_classes == c)[0][0] for c in test_classes])
         y_pred_proba_aligned = y_pred_proba[:, class_indices]
 
-        # Renormalize probabilities
+        # Renormalize: selecting a subset of columns leaves rows summing to < 1.
         y_pred_proba_aligned = y_pred_proba_aligned / y_pred_proba_aligned.sum(axis=1, keepdims=True)
 
-        # y_true_bin is shared by AUROC, AUPRC, and Brier
+        # y_true_bin is shared by AUROC, AUPRC, and Brier, so it is computed once.
         if need_auroc or need_auprc or need_brier:
             y_true_bin = label_binarize(y_true, classes=test_classes)
 
-            # Expand binary labels to match multiclass probability columns.
+            # label_binarize returns a single column for 2 classes; expand it to
+            # match the two-column probability array.
             if n_test_classes == 2 and y_true_bin.shape[1] == 1:
                 y_true_bin = np.hstack([1 - y_true_bin, y_true_bin])
 
@@ -622,7 +612,6 @@ def compute_scoring_metrics(
             log_loss_value = log_loss(y_true, y_pred_proba_aligned)
 
         if need_threshold:
-            # Compute threshold-based metrics using OVR macro-averaging
             y_pred = test_classes[np.argmax(y_pred_proba_aligned, axis=1)]
 
             macro_avg_metrics = compute_macro_avg_metrics(y_true, y_pred, n_test_classes)
@@ -637,7 +626,6 @@ def compute_scoring_metrics(
             bacc = balanced_accuracy_score(y_true, y_pred)
 
     else:
-        # Binary case
         if y_pred_proba.ndim == 1 or y_pred_proba.shape[1] == 1:
             y_pred_proba_aligned = y_pred_proba.ravel()
         else:
@@ -664,7 +652,6 @@ def compute_scoring_metrics(
             # exactly equal to it predicts the control class.
             y_pred = (y_pred_proba_aligned > threshold).astype(int)
 
-            # Confusion matrix elements
             tp = np.sum((y_true == 1) & (y_pred == 1))
             tn = np.sum((y_true == 0) & (y_pred == 0))
             fp = np.sum((y_true == 0) & (y_pred == 1))
@@ -684,7 +671,6 @@ def compute_scoring_metrics(
             mcc = matthews_corrcoef(y_true, y_pred)
             bacc = balanced_accuracy_score(y_true, y_pred)
 
-    # Compile only the families actually computed
     all_results = {}
     if need_auroc:
         all_results['AUROC'] = auroc
@@ -797,7 +783,6 @@ def aggregate_all_metrics(metrics, model_keys, set_type, var, all_metrics):
     for model_key in model_keys:
         aggregated_results[model_key] = {}
         if var in metrics[model_key][set_type]:
-            # Aggregate the scoring metrics for the given model, set type, and variable.
             model_agg = summarize_scoring_metrics(metrics[model_key][set_type][var])
             for metric in all_metrics:
                 if metric in model_agg:

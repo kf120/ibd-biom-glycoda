@@ -34,7 +34,6 @@ def load_dataset_excel(fname, data_dir=None):
     pd.DataFrame
         The loaded Excel file as a DataFrame
     """
-    # Use provided data_dir or the configured project-level DATA_DIR
     base_data_dir = DATASETS_DIR if data_dir is None else Path(data_dir)
     filepath = base_data_dir / fname
     
@@ -61,10 +60,8 @@ def load_dataset_excel(fname, data_dir=None):
             'See README.md for data access instructions.'
         )
 
-    # Load the Excel file
     df = pd.read_excel(filepath)
-    
-    # Drop unnamed index column if present
+
     if 'Unnamed: 0' in df.columns:
         df = df.drop(columns=['Unnamed: 0'])
     
@@ -85,10 +82,8 @@ def prepare_ibd_dataset(df, binary=True, controls=['HC', 'SC'], cases=['CD', 'UC
     Returns:
     pd.DataFrame: A processed dataframe with either binary or multiclass labels.
     """
-    # Make a copy of the input dataframe
     df_sub = df.copy()
-    
-    # Define disease categories
+
     disease_categories = {
         'UC': ['UC'],
         'CD': ['CD'],
@@ -97,20 +92,17 @@ def prepare_ibd_dataset(df, binary=True, controls=['HC', 'SC'], cases=['CD', 'UC
         'Other': ['DI', 'GA', 'NS', 'OT', 'OF', 'IS', 'CP', 'CO', 'IF', 'ID', 'PI', 'PC', 'IBD-U', 'IBDU']
     }
     
-    # Replace disease categories
     for category, diseases in disease_categories.items():
         df_sub['DISEASE'] = df_sub['DISEASE'].replace(diseases, category)
 
-    # Replace cohort names
     df_sub['Cohort'] = df_sub['Cohort'].replace(['Edinburgh', 'Cedars', 'Italy', 'Maastricht'], ['UK', 'US', 'IT', 'NL'])
 
-    # Use a fixed age range for binning (exclusive groups)
+    # Pre-specified cutoff, not data-driven.
     age_bins = [0, 40, np.inf]
     labels = ['<40', '>40']
     df_sub['Age_Group'] = pd.cut(df_sub['Age'], bins=age_bins, labels=labels, include_lowest=True)
 
 
-    # Define GP to Oxford mapping
     oxford_mapping = {
             'GP1': 'FA1',
             'GP2': 'A2',
@@ -138,28 +130,20 @@ def prepare_ibd_dataset(df, binary=True, controls=['HC', 'SC'], cases=['CD', 'UC
             'GP24': 'FA2BG2S2'
         }
     
-    # Create combined mapping: GP -> GP_OxfordName
     combined_mapping = {gp: f"{gp}_{oxford}" for gp, oxford in oxford_mapping.items()}
-    
-    # Apply renaming
     df_sub = df_sub.rename(columns=combined_mapping)
 
-    # Filter out glycans with less than the specified threshold
     df_sub_filtered = df_sub.copy()
     df_sub_filtered, allowed_gps = drop_low_abundant_GPs(df_sub_filtered, threshold=glycan_threshold) # if threshold=0, no filtering is applied
 
     if winsorize:
-        # Winsorize the dataset
         df_sub_filtered, stats = apply_winsorization(df_sub_filtered, col_names=allowed_gps, trim_frac=0.05)
 
-    # Set 'Imperial_ID' as the index
     df_sub_filtered = df_sub_filtered.set_index('Imperial_ID')
 
     if binary:
-        # Create binary classification
         df_sub_binary = df_sub_filtered.copy()
-        
-        # Validate input
+
         all_categories = set(disease_categories.keys())
         if not (set(controls).issubset(all_categories) and set(cases).issubset(all_categories)):
             raise ValueError("Controls and cases must be subsets of the defined disease categories")
@@ -167,19 +151,15 @@ def prepare_ibd_dataset(df, binary=True, controls=['HC', 'SC'], cases=['CD', 'UC
         if set(controls) & set(cases):
             raise ValueError("Controls and cases must be mutually exclusive")
         
-        # Define control group
         df_sub_binary['DISEASE'] = df_sub_binary['DISEASE'].replace(controls, 'Control')
-        
-        # Define case group
         df_sub_binary['DISEASE'] = df_sub_binary['DISEASE'].replace(cases, 'Case')
-        
-        # Remove any remaining categories
+
+        # Drop diagnoses outside controls/cases (e.g. 'Other') after remapping.
         df_sub_binary = df_sub_binary[df_sub_binary['DISEASE'].isin(['Control', 'Case'])]
         
         return df_sub_binary, allowed_gps
     
     else:
-        # For multiclass classification, keep only the specified categories
         df_multiclass = df_sub_filtered[df_sub_filtered['DISEASE'].isin(['HC', 'SC', 'CD', 'UC'])]
 
         return df_multiclass, allowed_gps
@@ -235,7 +215,6 @@ def extract_demographics(df, age_ranges=None):
     Z_demographics = df[['Sex', 'Age']].copy()
     Z_demographics['Sex'] = Z_demographics['Sex'].map({'M': 0, 'F': 1})
     
-    # Create age bins
     if age_ranges is None:
         age_ranges = [0, 40, np.inf]
     
@@ -269,7 +248,6 @@ def extract_disease_labels(df):
             'UC': 3
         }).infer_objects(copy=False).astype(int)
     else:
-        # Binary classification
         y_disease = df['DISEASE'].map({'Control': 0, 'Case': 1}).astype(int)
     
     return y_disease.to_numpy()
@@ -434,26 +412,20 @@ def preprocess_data(df, coda_cols,
         Serological column names (passed through)
     """
     
-    # Extract serological features (raw, not scaled)
     X_serological = extract_serological_features(df, coda_cols)
-    
-    # Extract demographics
+
     Z_demographics, Z_demographics_binarized, age_ranges = extract_demographics(
         df, age_ranges
     )
-    
-    # Extract disease labels
+
     y_disease = extract_disease_labels(df)
 
-    # Extract cohort features
     V_cohort_encoded, cohort_locations, ohe_cohort = extract_cohort_features(
         df, ohe_cohort, fit
     )
-    
-    # Convert binarized demographics to numpy
+
     Z_demographics_binarized = Z_demographics_binarized.to_numpy()
 
-    # Scale demographics
     Z_demographics, scaler_Z = scale_demographics(
         Z_demographics, scaler_Z, fit
     )
@@ -501,34 +473,31 @@ def prepare_loco_data(df, coda_cols, loco_test_cohort, random_state=42,
         Contains age_ranges, cohort_locations, ohe_cohort, scaler_Z, coda_cols
     """
     
-    # Split data
     if loco_test_cohort not in df['Cohort'].unique():
         raise ValueError(f"Test cohort '{loco_test_cohort}' not found in dataset cohorts: {df['Cohort'].unique().tolist()}")
     df_train, df_test = split_loco(df, loco_test_cohort, random_state)
-    
-    # Print sizes (optional)
+
     if print_set_sizes:
         print(f"Test cohort: {loco_test_cohort}")
         print(f"Train set size: {len(df_train)}")
         print(f"Test set size: {len(df_test)}")
         print(f"Train cohorts: {df_train['Cohort'].unique().tolist()}")
 
-    # Extract GlycanAge values (used for post-hoc analyses)
+    # Not part of train_data/test_data; carried in metadata for post-hoc analyses.
     glycan_age_train = extract_glycan_age(df_train).to_numpy()
     glycan_age_test = extract_glycan_age(df_test).to_numpy()
-    
-    # Preprocess training data (fit encoders/scalers)
+
+    # fit=True: encoders/scalers are fitted here, not on the test cohort.
     (X_train, Z_train, Z_train_bin, y_train, V_train,
      age_ranges, cohort_locations, ohe_cohort, scaler_Z, coda_cols) = preprocess_data(
         df_train, coda_cols, fit=True
     )
-    
-    # Preprocess test data (use fitted encoders/scalers)
+
+    # fit=False: reuses the encoders/scalers fitted on df_train above.
     X_test, Z_test, Z_test_bin, y_test, V_test, *_ = preprocess_data(
         df_test, coda_cols, ohe_cohort=ohe_cohort, scaler_Z=scaler_Z, fit=False
     )
-    
-    # Package data
+
     train_data = (X_train, Z_train, Z_train_bin, y_train, V_train)
     test_data = (X_test, Z_test, Z_test_bin, y_test, V_test)
     
@@ -601,8 +570,7 @@ def generate_demographic_comparison(
             group_data = df[df['DISEASE'] == group]
             age_info = get_median_iqr(group_data['Age'])
             female_info = get_count_percentage(group_data['Sex'] == 'F')
-            
-            # Use cohort_order if provided, otherwise use value_counts order
+
             if cohort_order is not None:
                 location_info = pd.Series({
                     loc: f"{(df['Cohort'] == loc).sum()} ({(df['Cohort'] == loc).sum()/len(group_data)*100:.1f}%)"
@@ -623,7 +591,6 @@ def generate_demographic_comparison(
         
         comparison_df = pd.DataFrame(groups).set_index('Group').T
 
-        # P-values (only if show_pvalues=True)
         if show_pvalues:
             if binary:
                 control_age = df[df['DISEASE'] == disease_groups[0]]['Age']
@@ -643,8 +610,7 @@ def generate_demographic_comparison(
             comparison_df['p-value'] = ''
             add_pvalue_with_significance(comparison_df, 'Age (median, IQR)', age_pvalue, alpha)
             add_pvalue_with_significance(comparison_df, 'Females (n, %)', sex_pvalue, alpha)
-            
-            # Use cohort_order for p-value rows if provided
+
             cohorts_to_display = cohort_order if cohort_order is not None else df['Cohort'].unique()
             for loc in cohorts_to_display:
                 add_pvalue_with_significance(comparison_df, f'Location - {loc} (n, %)', location_pvalue, alpha)
@@ -656,8 +622,7 @@ def generate_demographic_comparison(
             group_data = df[df['Cohort'] == group]
             age_info = get_median_iqr(group_data['Age'])
             female_info = get_count_percentage(group_data['Sex'] == 'F')
-            
-            # Use disease_order if provided, otherwise use value_counts order
+
             if disease_order is not None:
                 disease_info = pd.Series({
                     dis: f"{(group_data['DISEASE'] == dis).sum()} ({(group_data['DISEASE'] == dis).sum()/len(group_data)*100:.1f}%)"
@@ -678,7 +643,6 @@ def generate_demographic_comparison(
 
         comparison_df = pd.DataFrame(groups).set_index('Group').T
 
-        # P-values (only if show_pvalues=True)
         if show_pvalues:
             age_pvalue = stats.kruskal(*[df[df['Cohort'] == g]['Age'] for g in cohort_groups]).pvalue
             sex_pvalue = stats.chi2_contingency(pd.crosstab(df['Cohort'], df['Sex']))[1]
@@ -687,8 +651,7 @@ def generate_demographic_comparison(
             comparison_df['p-value'] = ''
             add_pvalue_with_significance(comparison_df, 'Age (median, IQR)', age_pvalue, alpha)
             add_pvalue_with_significance(comparison_df, 'Females (n, %)', sex_pvalue, alpha)
-            
-            # Use disease_order for p-value rows if provided
+
             diseases_to_display = disease_order if disease_order is not None else df['DISEASE'].unique()
             for dis in diseases_to_display:
                 add_pvalue_with_significance(comparison_df, f'Group - {dis} (n, %)', disease_pvalue, alpha)

@@ -60,19 +60,15 @@ def load_glycompare_data(orig_df, coda_cols, abd_fname, annot_fname, data_dir=No
     """
     df_abd, df_annot = _load_glycompare_excel(abd_fname, annot_fname, data_dir=data_dir)
 
-    # Create a copy of the original dataframe
     df_glycompare = orig_df.copy()
     df_glycompare = df_glycompare.drop(coda_cols, axis=1)
 
-    # Map GM columns to IUPAC names
     gm_to_iupac = dict(zip(df_annot['Name'], df_annot['IUPAC']))
     df_abd = df_abd.rename(columns=gm_to_iupac)
 
-    # Process glycomotif data
     X_glycomotif = df_abd.reset_index(drop=True)
     X_glycomotif.index = df_glycompare.index
 
-    # Concatenate dataframes
     df_glycompare = pd.concat([df_glycompare, X_glycomotif], axis=1)
 
     return df_glycompare, X_glycomotif
@@ -101,10 +97,8 @@ def apply_winsorization(df, col_names, trim_frac=0.05, return_stats=True):
         { col_name: (n_clipped_low, n_clipped_high) }
     """
     df2 = df.copy()
-    # track how many values are clipped in each tail
     clip_stats = {}
 
-    # store original row sums
     row_sums = df2[col_names].sum(axis=1)
 
     for col in col_names:
@@ -115,20 +109,17 @@ def apply_winsorization(df, col_names, trim_frac=0.05, return_stats=True):
         mask = df2[col].notna()
         orig = df2.loc[mask, col].values
 
-        # compute true quantile cutoffs for counting
+        # For counting only; mstats.winsorize below applies its own clip logic.
         lower_cut = np.percentile(orig, 100 * trim_frac)
         upper_cut = np.percentile(orig, 100 * (1 - trim_frac))
 
-        # winsorize
         wvals = mstats.winsorize(orig, limits=[trim_frac, trim_frac])
         df2.loc[mask, col] = wvals
 
-        # count how many actually got clipped
         n_low  = int((orig < lower_cut).sum())
         n_high = int((orig > upper_cut).sum())
         clip_stats[col] = (n_low, n_high)
 
-    # re-close each row to its original sum
     new_sums = df2[col_names].sum(axis=1)
     df2[col_names] = df2[col_names].div(new_sums, axis=0).mul(row_sums, axis=0)
 
@@ -156,18 +147,15 @@ def residualize_coda(X_trans, metadata_df, covariates=['Age','Sex'], alpha=1.0):
     pd.DataFrame
         Residualized data with covariate effects removed.
     """
-    # 1. Build and standardize the covariate matrix
     cov = metadata_df.loc[X_trans.index, covariates].copy()
     cov = pd.get_dummies(cov, drop_first=True)
     scaler = StandardScaler()
     X_cov = scaler.fit_transform(cov)
 
-    # 2. Fit a single Ridge for all glycans
     model = Ridge(alpha=alpha, fit_intercept=True)
-    model.fit(X_cov, X_trans.values) 
+    model.fit(X_cov, X_trans.values)
     Y_hat = model.predict(X_cov)
 
-    # 3. Compute residuals
     resid = X_trans.values - Y_hat
     return pd.DataFrame(resid, index=X_trans.index, columns=X_trans.columns)
 
@@ -185,7 +173,6 @@ def apply_clr_transformation(df, group1=None, group2=None, gamma=0.1, custom_sca
     if group1 is None:
         group1 = df.index
 
-    # Call the existing CLR transformation function.
     transformed_transposed = glwstats.clr_transformation(df_transposed, group1, group2, gamma=gamma, custom_scale=custom_scale)
 
     # Transpose back to original orientation.
@@ -207,7 +194,7 @@ class CLRProcessor(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
-        # same steps, but return array
+        # Returns a numpy array, not a DataFrame, for sklearn Pipeline compatibility.
         df = X.copy() if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
         group1 = df.index.tolist()
 
@@ -238,8 +225,7 @@ class GlyCompareProcessor(BaseEstimator, TransformerMixin):
         self.X_glycomotif_full = None
 
     def fit(self, X, y=None):
-        # Load the full glycomotif data to be reused during transform
-        # Pass data_dir to load_glycompare_data or load files here
+        # Loaded once here and reused by every transform() call.
         if self.X_glycomotif_full is None:
             _, self.X_glycomotif_full = load_glycompare_data(
                 self.orig_df,
@@ -251,7 +237,7 @@ class GlyCompareProcessor(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
-        # Ensure that the index in X_glycomotif is aligned with X
+        # Relies on X_glycomotif_full's index matching X's.
         X_glycomotif_subset = self.X_glycomotif_full.loc[X.index]
         return X_glycomotif_subset
 

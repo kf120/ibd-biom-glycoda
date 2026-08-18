@@ -41,10 +41,8 @@ def preprocess_linear_modeling(df, disease_cat=['Non-IBD', 'CD', 'UC'], center_a
     df = df.copy()
 
     if center_age:
-        # Center Age around 40
         df['Age'] = df['Age'] - 40
 
-    # Set categorical variables
     df["Sex"] = df["Sex"].astype("category")
     df["Cohort"] = df["Cohort"].astype("category")
     df["DISEASE"] = pd.Categorical(df["DISEASE"], categories=disease_cat, ordered=True)
@@ -137,7 +135,6 @@ def check_ols_diagnostics(results_fixed, alpha=0.05, cooks_concern=0.5, verbose 
         print(f"  GPs with Cook's D > {cooks_concern}:   {n_concern} / {len(df_diag)}")
         print()
 
-        # Flag potentially problematic GPs (RESET or Cook's > concern)
         problems = df_diag[
             df_diag['reset_fail'] | (df_diag['n_cooks_above_concern'] > 0)
         ]
@@ -157,7 +154,6 @@ def check_ols_diagnostics(results_fixed, alpha=0.05, cooks_concern=0.5, verbose 
         else:
             print("  No GPs flagged for genuine concern.")
 
-        # Cook's distance distribution summary
         print()
         print("  Cook's distance distribution across all GPs:")
         print(f"    Median:  {df_diag['cooks_median'].min():.6f} – "
@@ -169,7 +165,6 @@ def check_ols_diagnostics(results_fixed, alpha=0.05, cooks_concern=0.5, verbose 
         print(f"    Max:     {df_diag['max_cooks_d'].min():.4f} – "
               f"{df_diag['max_cooks_d'].max():.4f}")
 
-        # Conservative 4/n summary
         print()
         print(f"  Note: Using conservative 4/n threshold "
               f"({df_diag['cooks_4n_threshold'].iloc[0]:.4f}),")
@@ -332,7 +327,6 @@ def run_permutation_fdr(
 
     thresholds = np.arange(0.001, 1.001, 0.001)
 
-    # Observed p-values
     obs_pvals = {c: [] for c in coef_names}
     for glycan in coda_cols:
         formula = f"{glycan} ~ {formula_rhs}"
@@ -344,7 +338,6 @@ def run_permutation_fdr(
                 obs_pvals[c].append(np.nan)
     obs_pvals = {c: np.array(v) for c, v in obs_pvals.items()}
 
-    # Parallel permutations via joblib
     perm_results = Parallel(n_jobs=n_jobs, backend='loky', verbose=10)(
         delayed(_run_one_perm)(
             i, df_model, coda_cols, formula_rhs, cov_type, coef_names, thresholds, seed
@@ -352,13 +345,12 @@ def run_permutation_fdr(
         for i in range(n_perm)
     )
 
-    # Aggregate null counts
     null_counts = {c: np.zeros((n_perm, len(thresholds))) for c in coef_names}
     for i, res in enumerate(perm_results):
         for c in coef_names:
             null_counts[c][i, :] = res[c]
 
-    # Compute FDR per coefficient
+    # Step-up permutation FDR: adjusted p = mean null exceedance / observed discoveries.
     results = {}
     for c in coef_names:
         pvals = obs_pvals[c]
@@ -406,18 +398,17 @@ def prepare_volcano_data(df_compare, alpha, correction_method='fdr_bh'):
     disease_groups : list
         Detected disease groups
     """
-    # Filter for main disease effects only (no interactions)
+    # Main DISEASE effects only; ":" in a param name marks an interaction term.
     df_main = df_compare[
         df_compare['param'].str.startswith("C(DISEASE") &
         ~df_compare['param'].str.contains(":", na=False)
     ].copy()
     
-    # Extract disease from parameter name
+    # patsy contrast encoding: C(DISEASE)[T.CD] -> 'CD'.
     df_main['Disease'] = df_main['param'].apply(
         lambda x: x.split("[T.")[1].rstrip("]") if "[T." in x else None
     )
     
-    # Calculate log10 p-values
     if correction_method == 'fdr_bh':
         df_main['log10p'] = -np.log10(df_main['pval_fixed_adj_bh'])
         df_main['Significant'] = df_main['pval_fixed_adj_bh'] < alpha
@@ -425,20 +416,16 @@ def prepare_volcano_data(df_compare, alpha, correction_method='fdr_bh'):
         df_main['log10p'] = -np.log10(df_main['pval_fixed_adj_by'])
         df_main['Significant'] = df_main['pval_fixed_adj_by'] < alpha
 
-    # GP labels for annotations (e.g., GP9 from GP9_FA2_3_G1)
+    # e.g. GP9 from GP9_FA2_3_G1.
     df_main['GP_label'] = df_main['glycan'].str.extract(r'(GP\d+)', expand=False)
 
-    # Confidence intervals for fixed effects
     df_main['CI_lower'] = df_main['est_fixed'] - 1.96 * df_main['se_fixed']
     df_main['CI_upper'] = df_main['est_fixed'] + 1.96 * df_main['se_fixed']
-    
-    # FDR line
+
     fdr_line = -np.log10(alpha)
-    
-    # Get unique disease groups
     disease_groups = sorted(df_main['Disease'].unique())
 
-    # Mark top 10 points above FDR line for labeling
+    # Label the 10 most significant points above the FDR line.
     df_main['TopLabel'] = False
     top_idx = (
         df_main[df_main['log10p'] >= fdr_line]
@@ -500,11 +487,9 @@ def prepare_barplot_data(df_compare, alpha, correction_method='fdr_bh'):
 
     df_bar["Significant"] = df_bar["p_value"] < alpha
 
-    # Confidence intervals for fixed effects
     df_bar['CI_lower'] = df_bar['EffectSize'] - 1.96 * df_bar['se_fixed']
     df_bar['CI_upper'] = df_bar['EffectSize'] + 1.96 * df_bar['se_fixed']
-    
-    # Sort glycans naturally
+
     glycan_order = sorted(
         df_bar['Glycan'].unique(), 
         key=natural_sort_key
@@ -515,8 +500,7 @@ def prepare_barplot_data(df_compare, alpha, correction_method='fdr_bh'):
         ordered=True
     )
     df_bar = df_bar.sort_values('Glycan')
-    
-    # Get unique disease groups (only main effects)
+
     disease_groups = sorted(df_bar['Disease'].unique())
     
     return df_bar, disease_groups
@@ -546,8 +530,7 @@ def plot_disease_volcano(df_volcano, fdr_line, disease_colors, ax, legend_order=
     ax : matplotlib axis
     """
     disease_groups = sorted(df_volcano['Disease'].unique())
-    
-    # Plot each disease group
+
     for disease in disease_groups:
         for is_sig, alpha_val in [(True, 1.0), (False, 0.3)]:
             subset = df_volcano[
@@ -569,11 +552,9 @@ def plot_disease_volcano(df_volcano, fdr_line, disease_colors, ax, legend_order=
                 linewidth=1.5
             )
     
-    # Add FDR threshold line and y-axis label
     ax.axhline(fdr_line, color='black', linestyle='--', linewidth=1)
     ax.set_ylabel(r"$-\log_{10}$(FDR-adjusted p-value)")
     
-    # Prepare legend
     ordered_diseases = legend_order or disease_groups
     handles = [
         Line2D([0], [0], marker='o', color='w',
@@ -586,7 +567,7 @@ def plot_disease_volcano(df_volcano, fdr_line, disease_colors, ax, legend_order=
     )
     ax.legend(handles=handles, fontsize='small', frameon=False)
     
-    # Annotate top 10 points above FDR line
+    # Points flagged by prepare_volcano_data's top-10 selection.
     if 'TopLabel' in df_volcano.columns:
         df_labels = df_volcano[df_volcano['TopLabel']].copy()
         df_labels = df_labels.dropna(subset=['GP_label'])
@@ -749,14 +730,11 @@ def analyze_disease_main_effects(df_compare, alpha, reference_group='Reference',
     reference_group : str
         Reference group name
     """
-    # Prepare data
     df_volcano, fdr_line, disease_groups_volcano = prepare_volcano_data(df_compare, alpha, correction_method)
     df_bar, disease_groups_bar = prepare_barplot_data(df_compare, alpha, correction_method)
-    
-    # Verify consistency
+
     disease_groups = sorted(set(disease_groups_volcano) | set(disease_groups_bar))
-    
-    # Print summary
+
     print("=" * 80)
     print("DISEASE EFFECTS ANALYSIS")
     print("=" * 80)
@@ -766,13 +744,12 @@ def analyze_disease_main_effects(df_compare, alpha, reference_group='Reference',
     print(f"\nColors assigned:")
     for disease, color in disease_colors.items():
         print(f"  {disease}: {color}")
-    
-    # Summary statistics
+
     print(f"\nVolcano plot:")
     for disease in disease_groups:
         n_sig = (df_volcano['Disease'] == disease) & df_volcano['Significant']
         print(f"  {disease}: {n_sig.sum()} significant glycans")
-    
+
     print(f"\nBar plot:")
     for disease in disease_groups:
         n_sig = (df_bar['Disease'] == disease) & df_bar['Significant']
@@ -807,9 +784,8 @@ def prepare_interaction_data(results_fixed, df_compare, correction_method='fdr_b
     
     for glycan, ols in results_fixed.items():
         for param in ols.params.index:
-            # Only interaction terms
+            # Interaction terms only: ":" marks a patsy interaction.
             if param.startswith("C(DISEASE") and ":" in param:
-                # Get significance from df_compare
                 sig_mask = (df_compare['glycan'] == glycan) & (df_compare['param'] == param)
                 if sig_mask.any():
                     if correction_method == 'fdr_bh':
@@ -824,7 +800,6 @@ def prepare_interaction_data(results_fixed, df_compare, correction_method='fdr_b
                     sig = False
                     pval = 1.0
                 
-                # Parse interaction type and disease
                 if ":Age" in param:
                     interaction_type = "Age"
                 elif ":C(Sex" in param:
@@ -832,7 +807,7 @@ def prepare_interaction_data(results_fixed, df_compare, correction_method='fdr_b
                 else:
                     continue
                 
-                # Extract disease name
+                # patsy contrast encoding: C(DISEASE)[T.CD] -> 'CD'.
                 disease = param.split("[T.")[1].split("]")[0]
                 
                 interaction_data.append({
@@ -847,8 +822,7 @@ def prepare_interaction_data(results_fixed, df_compare, correction_method='fdr_b
                 })
     
     df_int = pd.DataFrame(interaction_data)
-    
-    # Sort glycans naturally
+
     glycan_order = sorted(df_int['Glycan'].unique(), key=natural_sort_key)
     df_int['Glycan'] = pd.Categorical(
         df_int['Glycan'], 
@@ -856,12 +830,10 @@ def prepare_interaction_data(results_fixed, df_compare, correction_method='fdr_b
         ordered=True
     )
     df_int = df_int.sort_values(['Interaction', 'Glycan'])
-    
-    # Calculate confidence intervals
+
     df_int['CI_lower'] = df_int['Estimate'] - 1.96 * df_int['SE']
     df_int['CI_upper'] = df_int['Estimate'] + 1.96 * df_int['SE']
-    
-    # Get unique disease groups
+
     disease_groups = sorted(df_int['Disease'].unique())
     
     return df_int, disease_groups
@@ -888,10 +860,9 @@ def plot_interaction_lollipop(df_int, interaction_type, disease_colors, ax, lege
     --------
     ax : matplotlib axis
     """
-    # Filter for this interaction type
     df_subset = df_int[df_int['Interaction'] == interaction_type].copy()
-    
-    # Get glycan order (reversed so GP1 is at top)
+
+    # Reversed: matplotlib draws y-axis bottom-to-top, GP1 should render at top.
     glycan_order = df_subset['Glycan'].cat.categories.tolist()
     glycan_order_reversed = list(reversed(glycan_order))
     glycan_positions = {g: i for i, g in enumerate(glycan_order_reversed)}
@@ -899,13 +870,12 @@ def plot_interaction_lollipop(df_int, interaction_type, disease_colors, ax, lege
     disease_groups = sorted(df_subset['Disease'].unique())
     n_diseases = len(disease_groups)
     
-    # Calculate offsets for multiple diseases
+    # Vertical offset so multiple diseases don't overplot on the same glycan row.
     if n_diseases == 1:
         offsets = {disease_groups[0]: 0}
     elif n_diseases == 2:
         offsets = {disease_groups[0]: 0.15, disease_groups[1]: -0.15}
     else:
-        # For 3+ diseases, spread them out
         offset_range = 0.3
         offset_step = offset_range / (n_diseases - 1) if n_diseases > 1 else 0
         offsets = {
@@ -918,54 +888,44 @@ def plot_interaction_lollipop(df_int, interaction_type, disease_colors, ax, lege
     for disease in disease_groups:
         df_disease = df_subset[df_subset['Disease'] == disease]
         offset = offsets[disease]
-        
-        # Separate significant and non-significant
+
         sig_mask = df_disease['Significant']
-        
-        # Plot non-significant effects first
+
+        # Drawn first (low zorder) so significant points render on top.
         if (~sig_mask).any():
             df_nonsig = df_disease[~sig_mask]
             y_nonsig = [glycan_positions[g] + offset for g in df_nonsig['Glycan']]
-            
-            # Error bars (very light and thin)
+
             ax.hlines(y_nonsig, df_nonsig['CI_lower'], df_nonsig['CI_upper'],
                      color=disease_colors[disease], linewidth=0.8, alpha=0.15, zorder=1)
-            # Lollipop heads (very faint hollow)
             ax.scatter(df_nonsig['Estimate'], y_nonsig,
                       facecolors='white', edgecolors=disease_colors[disease],
                       s=60, zorder=1, linewidth=1, alpha=0.2)
-        
-        # Plot significant effects
+
         if sig_mask.any():
             df_sig = df_disease[sig_mask]
             y_sig = [glycan_positions[g] + offset for g in df_sig['Glycan']]
-            
-            # Error bars (bold and prominent)
+
             ax.hlines(y_sig, df_sig['CI_lower'], df_sig['CI_upper'],
                      color=disease_colors[disease], linewidth=2.5, alpha=0.9, zorder=3)
-            # Lollipop heads (solid and prominent)
             ax.scatter(df_sig['Estimate'], y_sig,
                       color=disease_colors[disease], s=100, zorder=4,
                       edgecolors='white', linewidth=2)
-            
-            # Add to legend dictionary
+
             legend_entries[disease] = Line2D([0], [0], marker='o', color='w',
                                             markerfacecolor=disease_colors[disease], markersize=8,
                                             markeredgecolor='white', markeredgewidth=1.5,
                                             label=f'{disease}')
     
-    # Styling
     ax.axvline(0, color='black', linestyle='--', linewidth=1, alpha=0.5, zorder=2)
-    
-    # Set y-ticks and labels (GP1 at top)
+
     ax.set_yticks(range(len(glycan_order)))
     ax.set_yticklabels(glycan_order_reversed)
     
     ax.set_xlabel('Change in disease effect per year of age (β)')
     ax.set_title(f'Disease × {interaction_type} Interaction')
     ax.grid(axis='x', alpha=0.3, zorder=0)
-    
-    # Order legend entries
+
     if legend_entries:
         if legend_order is not None:
             ordered_handles = [legend_entries[disease] for disease in legend_order 
@@ -1010,10 +970,8 @@ def analyze_disease_interactions(results_fixed, df_compare, alpha,
     reference_group : str
         Reference group name
     """
-    # Prepare data
     df_int, disease_groups = prepare_interaction_data(results_fixed, df_compare, correction_method)
-    
-    # Print summary
+
     print("=" * 80)
     print("DISEASE INTERACTIONS ANALYSIS")
     print("=" * 80)
@@ -1024,8 +982,7 @@ def analyze_disease_interactions(results_fixed, df_compare, alpha,
     for disease, color in disease_colors.items():
         if disease in disease_groups:
             print(f"  {disease}: {color}")
-    
-    # Summary statistics
+
     for interaction_type in df_int['Interaction'].unique():
         print(f"\n{interaction_type} Interactions:")
         for disease in disease_groups:
