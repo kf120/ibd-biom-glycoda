@@ -81,6 +81,15 @@ class TestComputeScoringMetricsGating:
         for key in metrics:
             assert subset[key] == pytest.approx(full[key], abs=1e-12, nan_ok=True)
 
+    @pytest.mark.parametrize("metric", ['CalibrationIntercept', 'CalibrationSlope', 'ModelBasedAUROC', 'NPV'])
+    def test_binary_only_metrics_are_nan_in_the_multiclass_branch(self, multiclass_data, metric):
+        """These have no accepted multiclass form, so the branch reports them as
+        not estimable rather than macro-averaging something else."""
+        y_true, y_proba = multiclass_data
+        result = compute_scoring_metrics(y_true, y_proba, metrics=[metric])
+
+        assert np.isnan(result[metric])
+
     def test_unknown_metric_name_is_silently_ignored(self, binary_data):
         """Matches pre-existing behaviour: unrecognised names are dropped,
         not errors."""

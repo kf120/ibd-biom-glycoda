@@ -23,6 +23,8 @@ from ibd_biom_glycoda.evaluation.metrics import (
     SUPPORT_FLAG_OK,
     SUPPORT_KEYS,
     case_fraction,
+    compute_calibration_intercept,
+    compute_calibration_slope,
     compute_model_based_c_statistic,
     compute_scoring_metrics,
     compute_support,
@@ -109,6 +111,100 @@ class TestModelBasedCStatistic:
     )
     def test_non_estimable_inputs_return_nan(self, predictions):
         assert np.isnan(compute_model_based_c_statistic(predictions))
+
+
+class TestCalibrationIntercept:
+    def test_closed_form_value_for_constant_predictions(self):
+        """With a constant prediction the offset model solves exactly:
+        ``a = logit(observed rate) - logit(p)``."""
+        y = np.array([1, 1, 1, 1, 1, 0, 0, 0, 0, 0])  # observed rate 0.5
+        p = np.full(10, 0.2)
+
+        expected = 0.0 - np.log(0.2 / 0.8)  # logit(0.5) - logit(0.2) = ln(4)
+
+        assert compute_calibration_intercept(y, p) == pytest.approx(expected, abs=1e-8)
+
+    def test_is_near_zero_for_well_calibrated_data(self):
+        rng = np.random.default_rng(7)
+        p = rng.beta(2.0, 2.0, size=20000)
+        y = rng.binomial(1, p)
+
+        assert compute_calibration_intercept(y, p) == pytest.approx(0.0, abs=0.05)
+
+    def test_is_positive_when_the_model_under_predicts_risk(self):
+        """More events occur than the model expected, so risks need shifting up."""
+        rng = np.random.default_rng(11)
+        p = rng.beta(2.0, 2.0, size=20000)
+        y = rng.binomial(1, np.clip(p + 0.15, 0.0, 1.0))
+
+        assert compute_calibration_intercept(y, p) > 0.1
+
+    @pytest.mark.parametrize("y", [np.ones(20), np.zeros(20), np.array([])])
+    def test_single_outcome_class_is_not_estimable(self, y):
+        p = np.full(y.size, 0.4)
+        assert np.isnan(compute_calibration_intercept(y, p))
+
+    def test_predictions_at_the_probability_bounds_do_not_produce_infinities(self):
+        y = np.array([1, 1, 0, 0])
+        p = np.array([1.0, 0.0, 1.0, 0.0])
+
+        result = compute_calibration_intercept(y, p)
+
+        assert np.isfinite(result)
+
+
+class TestCalibrationSlope:
+    def test_is_near_one_for_well_calibrated_data(self):
+        rng = np.random.default_rng(3)
+        p = rng.beta(2.0, 2.0, size=20000)
+        y = rng.binomial(1, p)
+
+        assert compute_calibration_slope(y, p) == pytest.approx(1.0, abs=0.06)
+
+    def test_recovers_a_known_slope(self):
+        """Outcomes generated with half the predicted log-odds must yield ~0.5."""
+        rng = np.random.default_rng(5)
+        lp = rng.normal(0.0, 2.0, size=40000)
+        p = 1.0 / (1.0 + np.exp(-lp))
+        y = rng.binomial(1, 1.0 / (1.0 + np.exp(-0.5 * lp)))
+
+        assert compute_calibration_slope(y, p) == pytest.approx(0.5, abs=0.05)
+
+    def test_is_below_one_when_predictions_are_too_extreme(self):
+        """The overfitting fingerprint."""
+        rng = np.random.default_rng(13)
+        lp = rng.normal(0.0, 1.0, size=20000)
+        y = rng.binomial(1, 1.0 / (1.0 + np.exp(-lp)))
+        p_too_extreme = 1.0 / (1.0 + np.exp(-2.5 * lp))
+
+        assert compute_calibration_slope(y, p_too_extreme) < 0.8
+
+    def test_constant_predictions_are_not_estimable(self):
+        """There is no spread for a slope to describe."""
+        y = np.array([1, 0, 1, 0, 1, 0])
+        assert np.isnan(compute_calibration_slope(y, np.full(6, 0.4)))
+
+    @pytest.mark.parametrize("y", [np.ones(20), np.zeros(20), np.array([])])
+    def test_single_outcome_class_is_not_estimable(self, y):
+        rng = np.random.default_rng(0)
+        p = rng.uniform(0.1, 0.9, size=y.size)
+        assert np.isnan(compute_calibration_slope(y, p))
+
+    def test_perfect_separation_is_reported_as_not_estimable(self):
+        """The maximum-likelihood slope is unbounded here, so no finite number
+        should be returned as though it were an estimate."""
+        y = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+        p = np.array([0.01, 0.02, 0.03, 0.04, 0.96, 0.97, 0.98, 0.99])
+
+        assert np.isnan(compute_calibration_slope(y, p))
+
+    def test_labels_outside_zero_one_are_rejected(self):
+        """A label set of {0, 2} would otherwise be scored as "no cases"."""
+        y = np.array([0, 0, 2, 2])
+        p = np.array([0.2, 0.3, 0.7, 0.8])
+
+        with pytest.raises(ValueError, match="labels in"):
+            compute_calibration_slope(y, p)
 
 
 class TestExplicitThreshold:

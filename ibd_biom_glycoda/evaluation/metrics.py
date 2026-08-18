@@ -6,7 +6,11 @@ import logging
 import warnings
 
 import numpy as np
+from scipy.optimize import brentq
+from scipy.special import expit
 from scipy.stats import t, sem
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, average_precision_score, log_loss, brier_score_loss, matthews_corrcoef, balanced_accuracy_score
 from sklearn.preprocessing import label_binarize
 
@@ -101,10 +105,11 @@ def compute_macro_avg_metrics(y_true, y_pred, n_classes):
 THRESHOLD_METRIC_NAMES = frozenset(
     {'MCC', 'BAcc', 'Sensitivity', 'Precision', 'Specificity', 'NPV', 'FPR', 'FNR', 'MCR'}
 )
-# The model-based c-statistic is a binary-only quantity: it is defined on a
-# single predicted probability per participant. The multiclass branch returns
-# NaN for it rather than inventing a macro-average.
-BINARY_ONLY_METRIC_NAMES = frozenset({'ModelBasedAUROC'})
+# Calibration and the model-based c-statistic are binary-only quantities: both
+# are defined on a single predicted probability per participant. The multiclass
+# branch returns NaN for them rather than inventing a macro-average.
+CALIBRATION_METRIC_NAMES = frozenset({'CalibrationIntercept', 'CalibrationSlope'})
+BINARY_ONLY_METRIC_NAMES = CALIBRATION_METRIC_NAMES | frozenset({'ModelBasedAUROC'})
 
 ALL_METRIC_NAMES = (
     frozenset({'AUROC', 'AUPRC', 'LogLoss', 'Brier'})
@@ -220,6 +225,169 @@ def support_flag(
     if n_cases < min_cases or n_controls < min_controls:
         return SUPPORT_FLAG_LOW
     return SUPPORT_FLAG_OK
+
+
+PROBABILITY_EPSILON = 1e-6
+"""Clip applied before taking a logit, so that a predicted 0 or 1 does not send
+the linear predictor to infinity. Reported alongside calibration estimates
+because it bounds how extreme a prediction can influence the fit."""
+
+
+def _prediction_logit(y_pred_proba, epsilon=PROBABILITY_EPSILON):
+    """Return the logit of predictions, clipped by ``epsilon`` at both ends."""
+    p = np.clip(np.asarray(y_pred_proba, dtype=float), epsilon, 1.0 - epsilon)
+    return np.log(p / (1.0 - p))
+
+
+def _validate_binary_labels(y_true, metric_name):
+    """Raise if labels are not drawn from {0, 1}.
+
+    Calibration is defined against a single case probability, so a label set of,
+    say, {0, 2} would be scored as "no cases" rather than rejected. Fail at the
+    boundary instead.
+    """
+    y = np.asarray(y_true)
+    if y.size == 0:
+        return
+    unexpected = set(np.unique(y)) - {0, 1}
+    if unexpected:
+        raise ValueError(
+            f"{metric_name} requires labels in {{0, 1}}; found {sorted(unexpected)}. "
+            "Encode the case class as 1 before calling."
+        )
+
+
+def _has_both_outcome_classes(y_true):
+    """Return True when both outcome classes are present."""
+    return len(np.unique(np.asarray(y_true))) == 2
+
+
+def _is_separated(y_true, linear_predictor):
+    """Return True when the linear predictor separates the two outcome classes.
+
+    With a single predictor, separation is exactly a threshold test: if no case
+    sits on the control side of the boundary, the maximum-likelihood slope is
+    unbounded and any finite number a solver returns is an artefact of where it
+    stopped. Checking the data directly makes this independent of solver
+    tolerances, which is why it is preferred to reading a convergence flag.
+
+    ``<=`` rather than ``<`` so that quasi-complete separation, where the two
+    classes touch at a single shared value, is caught as well.
+    """
+    y = np.asarray(y_true)
+    lp = np.asarray(linear_predictor)
+    lp_controls = lp[y == 0]
+    lp_cases = lp[y == 1]
+    if lp_controls.size == 0 or lp_cases.size == 0:
+        return True
+    return bool(
+        lp_controls.max() <= lp_cases.min() or lp_cases.max() <= lp_controls.min()
+    )
+
+
+def compute_calibration_intercept(y_true, y_pred_proba, epsilon=PROBABILITY_EPSILON):
+    """Compute calibration-in-the-large as an intercept update.
+
+    Fits ``logit(P(y=1)) = a + offset``, where the offset is the prediction logit
+    and the slope is fixed at 1. This is the standard calibration-in-the-large
+    quantity: it asks whether predicted risks are systematically too high or too
+    low, holding their spread fixed. It is not the intercept of the two-parameter
+    calibration model used by :func:`compute_calibration_slope`, which absorbs
+    part of any slope miscalibration into its intercept.
+
+    Parameters
+    ----------
+    y_true : array-like
+        Observed binary labels, where 1 denotes a case.
+    y_pred_proba : array-like
+        Predicted probability of the case class, one per participant.
+    epsilon : float, optional
+        Clip applied before the logit. Default ``PROBABILITY_EPSILON``.
+
+    Returns
+    -------
+    float
+        Intercept update. 0 indicates no systematic over- or under-prediction,
+        positive indicates the model under-predicts risk. NaN when the sample
+        contains only one outcome class, in which case the maximum-likelihood
+        estimate is unbounded.
+    """
+    _validate_binary_labels(y_true, 'Calibration intercept')
+    y = np.asarray(y_true, dtype=float)
+    if y.size == 0 or not _has_both_outcome_classes(y):
+        logger.debug("Calibration intercept not estimable: fewer than two outcome classes.")
+        return np.nan
+
+    offset = _prediction_logit(y_pred_proba, epsilon=epsilon)
+    observed_cases = y.sum()
+
+    def score(a):
+        """Score equation of the offset logistic model; strictly decreasing in a."""
+        return observed_cases - expit(offset + a).sum()
+
+    # The score is strictly decreasing, so any sign change brackets the root.
+    # Expand outwards rather than assuming a fixed window, since a badly
+    # miscalibrated model can need a large shift.
+    bound = 1.0
+    while bound <= 64.0:
+        if score(-bound) > 0 > score(bound):
+            return float(brentq(score, -bound, bound, xtol=1e-10))
+        bound *= 2.0
+
+    logger.debug("Calibration intercept not estimable: no sign change within +/-64 logits.")
+    return np.nan
+
+
+def compute_calibration_slope(y_true, y_pred_proba, epsilon=PROBABILITY_EPSILON):
+    """Compute the calibration slope from an unpenalised logistic calibration model.
+
+    Fits ``logit(P(y=1)) = a + b * logit(p)`` and returns ``b``. A slope below 1
+    means predictions are too extreme, the usual fingerprint of overfitting; above
+    1 means they are too bunched together.
+
+    Parameters
+    ----------
+    y_true : array-like
+        Observed binary labels, where 1 denotes a case.
+    y_pred_proba : array-like
+        Predicted probability of the case class, one per participant.
+    epsilon : float, optional
+        Clip applied before the logit. Default ``PROBABILITY_EPSILON``.
+
+    Returns
+    -------
+    float
+        Calibration slope, ideally 1. NaN when the sample has fewer than two
+        outcome classes, when the predictions are constant, or when the two
+        classes are separated by the predictions, which leaves the
+        maximum-likelihood slope unbounded.
+    """
+    _validate_binary_labels(y_true, 'Calibration slope')
+    y = np.asarray(y_true)
+    if y.size == 0 or not _has_both_outcome_classes(y):
+        logger.debug("Calibration slope not estimable: fewer than two outcome classes.")
+        return np.nan
+
+    lp = _prediction_logit(y_pred_proba, epsilon=epsilon)
+    if np.allclose(lp, lp[0]):
+        logger.debug("Calibration slope not estimable: predictions are constant.")
+        return np.nan
+    if _is_separated(y, lp):
+        logger.debug("Calibration slope not estimable: outcome classes are separated.")
+        return np.nan
+
+    model = LogisticRegression(penalty=None, solver='lbfgs', max_iter=1000)
+    with warnings.catch_warnings():
+        # Secondary net for any remaining ill-conditioned fit: report it as not
+        # estimable rather than returning whichever value lbfgs stopped at.
+        warnings.simplefilter('error', ConvergenceWarning)
+        try:
+            model.fit(lp.reshape(-1, 1), y)
+        except ConvergenceWarning:
+            logger.debug("Calibration slope not estimable: logistic fit did not converge.")
+            return np.nan
+
+    return float(model.coef_[0][0])
 
 
 def compute_model_based_c_statistic(y_pred_proba):
@@ -346,6 +514,8 @@ def compute_scoring_metrics(
     need_auprc = 'AUPRC' in requested
     need_logloss = 'LogLoss' in requested
     need_brier = 'Brier' in requested
+    need_cal_intercept = 'CalibrationIntercept' in requested
+    need_cal_slope = 'CalibrationSlope' in requested
     need_model_based = 'ModelBasedAUROC' in requested
     need_threshold = bool(requested & THRESHOLD_METRIC_NAMES)
 
@@ -371,9 +541,9 @@ def compute_scoring_metrics(
     auroc = auprc = log_loss_value = brier_score = None
     tpr = precision = tnr = fpr = fnr = misclassification_rate = mcc = bacc = None
     npv = None
-    # Binary-only quantity. The multiclass branch leaves it NaN rather than
-    # macro-averaging a measure that has no accepted multiclass form.
-    model_based_auroc = np.nan
+    # Binary-only quantities. The multiclass branch leaves them NaN rather than
+    # macro-averaging a calibration slope, which has no accepted multiclass form.
+    cal_intercept = cal_slope = model_based_auroc = np.nan
 
     if n_test_classes > 2 or n_model_classes > 2:
         # Multiclass case
@@ -434,6 +604,10 @@ def compute_scoring_metrics(
         if need_brier:
             brier_score = brier_score_loss(y_true, y_pred_proba_aligned)
 
+        if need_cal_intercept:
+            cal_intercept = compute_calibration_intercept(y_true, y_pred_proba_aligned)
+        if need_cal_slope:
+            cal_slope = compute_calibration_slope(y_true, y_pred_proba_aligned)
         if need_model_based:
             model_based_auroc = compute_model_based_c_statistic(y_pred_proba_aligned)
 
@@ -472,6 +646,10 @@ def compute_scoring_metrics(
         all_results['LogLoss'] = log_loss_value
     if need_brier:
         all_results['Brier'] = brier_score
+    if need_cal_intercept:
+        all_results['CalibrationIntercept'] = cal_intercept
+    if need_cal_slope:
+        all_results['CalibrationSlope'] = cal_slope
     if need_model_based:
         all_results['ModelBasedAUROC'] = model_based_auroc
     if need_threshold:
