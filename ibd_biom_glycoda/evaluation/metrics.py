@@ -101,9 +101,15 @@ def compute_macro_avg_metrics(y_true, y_pred, n_classes):
 THRESHOLD_METRIC_NAMES = frozenset(
     {'MCC', 'BAcc', 'Sensitivity', 'Precision', 'Specificity', 'NPV', 'FPR', 'FNR', 'MCR'}
 )
+# The model-based c-statistic is a binary-only quantity: it is defined on a
+# single predicted probability per participant. The multiclass branch returns
+# NaN for it rather than inventing a macro-average.
+BINARY_ONLY_METRIC_NAMES = frozenset({'ModelBasedAUROC'})
+
 ALL_METRIC_NAMES = (
     frozenset({'AUROC', 'AUPRC', 'LogLoss', 'Brier'})
     | THRESHOLD_METRIC_NAMES
+    | BINARY_ONLY_METRIC_NAMES
 )
 
 # Support counts accompany every metric dictionary so that no subgroup or cohort
@@ -216,6 +222,78 @@ def support_flag(
     return SUPPORT_FLAG_OK
 
 
+def compute_model_based_c_statistic(y_pred_proba):
+    """Compute the c-statistic expected under the model's own predicted risks.
+
+    This is the discrimination a perfectly calibrated model would achieve in a
+    population with this distribution of predicted probabilities, computed from
+    the predictions alone without using the observed outcomes. Comparing it with
+    the observed AUROC separates two explanations for a low value in a held-out
+    cohort: a narrow spread of predicted risks means the cohort is intrinsically
+    hard to separate (case-mix), whereas an observed AUROC well below the
+    model-based value means the coefficients did not transport.
+
+    Each ordered pair of distinct participants ``(i, j)`` is weighted by the
+    probability that ``i`` is a case and ``j`` a control, ``p_i * (1 - p_j)``, and
+    contributes 1 when ``p_i > p_j`` and 0.5 when the two predictions are tied.
+
+    Implemented in ``O(n log n)`` by sorting once and walking tie blocks, since a
+    pairwise form would be quadratic in the cohort size.
+
+    Parameters
+    ----------
+    y_pred_proba : array-like
+        Predicted probability of the case class, one per participant.
+
+    Returns
+    -------
+    float
+        Model-based c-statistic. NaN when fewer than two participants are
+        supplied, or when every prediction is 0 or every prediction is 1, which
+        leaves no case-control pair any weight.
+
+    References
+    ----------
+    van Klaveren D, Gonen M, Steyerberg EW, Vergouwe Y. A new concordance
+    measure for risk prediction models in external validation settings.
+    Stat Med. 2016;35(23):4136-4152.
+    """
+    p = np.asarray(y_pred_proba, dtype=float).ravel()
+    if p.size < 2:
+        logger.debug("Model-based c-statistic not estimable: fewer than two predictions.")
+        return np.nan
+    if np.any(np.isnan(p)):
+        logger.debug("Model-based c-statistic not estimable: predictions contain NaN.")
+        return np.nan
+
+    order = np.argsort(p, kind='mergesort')
+    p_sorted = p[order]
+    case_w = p_sorted                # weight of being a case
+    control_w = 1.0 - p_sorted       # weight of being a control
+
+    total_control_w = control_w.sum()
+    # Denominator excludes self-pairs: a pair needs two distinct participants.
+    denominator = float(np.sum(case_w * (total_control_w - control_w)))
+    if denominator <= 0.0:
+        logger.debug("Model-based c-statistic not estimable: no case-control pair carries weight.")
+        return np.nan
+
+    # Cumulative control weight strictly below each tie block, and the block's
+    # own total, so ties can be given half credit without a pairwise loop.
+    cum_control_w = np.concatenate(([0.0], np.cumsum(control_w)))
+    block_starts = np.flatnonzero(np.concatenate(([True], p_sorted[1:] != p_sorted[:-1])))
+    block_ends = np.concatenate((block_starts[1:], [p_sorted.size]))
+
+    block_index = np.repeat(np.arange(block_starts.size), block_ends - block_starts)
+    control_w_below = cum_control_w[block_starts][block_index]
+    control_w_in_block = (cum_control_w[block_ends] - cum_control_w[block_starts])[block_index]
+
+    concordant_w = control_w_below + 0.5 * (control_w_in_block - control_w)
+    numerator = float(np.sum(case_w * concordant_w))
+
+    return numerator / denominator
+
+
 def compute_scoring_metrics(
     y_true,
     y_pred_proba,
@@ -268,6 +346,7 @@ def compute_scoring_metrics(
     need_auprc = 'AUPRC' in requested
     need_logloss = 'LogLoss' in requested
     need_brier = 'Brier' in requested
+    need_model_based = 'ModelBasedAUROC' in requested
     need_threshold = bool(requested & THRESHOLD_METRIC_NAMES)
 
     # Get unique classes in test set
@@ -292,6 +371,9 @@ def compute_scoring_metrics(
     auroc = auprc = log_loss_value = brier_score = None
     tpr = precision = tnr = fpr = fnr = misclassification_rate = mcc = bacc = None
     npv = None
+    # Binary-only quantity. The multiclass branch leaves it NaN rather than
+    # macro-averaging a measure that has no accepted multiclass form.
+    model_based_auroc = np.nan
 
     if n_test_classes > 2 or n_model_classes > 2:
         # Multiclass case
@@ -352,6 +434,9 @@ def compute_scoring_metrics(
         if need_brier:
             brier_score = brier_score_loss(y_true, y_pred_proba_aligned)
 
+        if need_model_based:
+            model_based_auroc = compute_model_based_c_statistic(y_pred_proba_aligned)
+
         if need_threshold:
             # Strictly above the threshold classifies as a case, so a probability
             # exactly equal to it predicts the control class.
@@ -387,6 +472,8 @@ def compute_scoring_metrics(
         all_results['LogLoss'] = log_loss_value
     if need_brier:
         all_results['Brier'] = brier_score
+    if need_model_based:
+        all_results['ModelBasedAUROC'] = model_based_auroc
     if need_threshold:
         all_results['MCC'] = mcc
         all_results['BAcc'] = bacc

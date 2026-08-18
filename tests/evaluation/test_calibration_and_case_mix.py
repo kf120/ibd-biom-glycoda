@@ -15,6 +15,7 @@ implementation:
 
 import numpy as np
 import pytest
+from sklearn.metrics import roc_auc_score
 
 from ibd_biom_glycoda.evaluation.metrics import (
     SUPPORT_FLAG_LOW,
@@ -22,10 +23,92 @@ from ibd_biom_glycoda.evaluation.metrics import (
     SUPPORT_FLAG_OK,
     SUPPORT_KEYS,
     case_fraction,
+    compute_model_based_c_statistic,
     compute_scoring_metrics,
     compute_support,
     support_flag,
 )
+
+
+def brute_force_model_based_c(p):
+    """Reference implementation: the quadratic pairwise form, written plainly.
+
+    Kept deliberately naive so that it shares no code path with the sorted
+    implementation it checks.
+    """
+    p = np.asarray(p, dtype=float)
+    numerator = 0.0
+    denominator = 0.0
+    for i in range(p.size):
+        for j in range(p.size):
+            if i == j:
+                continue
+            weight = p[i] * (1.0 - p[j])
+            denominator += weight
+            if p[i] > p[j]:
+                numerator += weight
+            elif p[i] == p[j]:
+                numerator += 0.5 * weight
+    return numerator / denominator
+
+
+class TestModelBasedCStatistic:
+    def test_matches_brute_force_pairwise_form(self):
+        rng = np.random.default_rng(0)
+        p = rng.uniform(0.01, 0.99, size=60)
+
+        assert compute_model_based_c_statistic(p) == pytest.approx(
+            brute_force_model_based_c(p), abs=1e-12
+        )
+
+    def test_matches_brute_force_when_predictions_are_heavily_tied(self):
+        """Ties get half credit, which is where a sorted implementation slips."""
+        rng = np.random.default_rng(1)
+        p = rng.choice([0.1, 0.4, 0.4, 0.9], size=40)
+
+        assert compute_model_based_c_statistic(p) == pytest.approx(
+            brute_force_model_based_c(p), abs=1e-12
+        )
+
+    def test_constant_predictions_give_one_half(self):
+        """A model that predicts the same risk for everyone ranks nobody."""
+        assert compute_model_based_c_statistic(np.full(50, 0.3)) == pytest.approx(0.5)
+
+    def test_recovers_observed_auroc_on_outcomes_simulated_from_its_own_risks(self):
+        """The plan's acceptance criterion for this metric.
+
+        When outcomes really are drawn from the predicted probabilities, the
+        model is perfectly calibrated by construction, so the observed
+        c-statistic must agree with the model-based one up to Monte Carlo error.
+        """
+        rng = np.random.default_rng(20240818)
+        p = rng.beta(2.0, 2.0, size=40000)
+        y = rng.binomial(1, p)
+
+        observed = roc_auc_score(y, p)
+        model_based = compute_model_based_c_statistic(p)
+
+        assert model_based == pytest.approx(observed, abs=0.01)
+
+    def test_wider_risk_spread_gives_a_higher_model_based_value(self):
+        """The case-mix reading: a narrow spread is intrinsically hard to rank."""
+        narrow = np.linspace(0.45, 0.55, 200)
+        wide = np.linspace(0.05, 0.95, 200)
+
+        assert compute_model_based_c_statistic(wide) > compute_model_based_c_statistic(narrow)
+
+    @pytest.mark.parametrize(
+        "predictions",
+        [
+            np.array([0.5]),               # fewer than two participants
+            np.array([]),                  # empty
+            np.zeros(10),                  # no case weight anywhere
+            np.ones(10),                   # no control weight anywhere
+            np.array([0.3, np.nan, 0.7]),  # missing prediction
+        ],
+    )
+    def test_non_estimable_inputs_return_nan(self, predictions):
+        assert np.isnan(compute_model_based_c_statistic(predictions))
 
 
 class TestExplicitThreshold:
