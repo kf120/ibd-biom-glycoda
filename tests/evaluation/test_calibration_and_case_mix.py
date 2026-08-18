@@ -28,6 +28,83 @@ from ibd_biom_glycoda.evaluation.metrics import (
 )
 
 
+class TestExplicitThreshold:
+    def test_default_threshold_is_unchanged(self):
+        """The pre-existing 0.5 behaviour must survive the new parameter."""
+        rng = np.random.default_rng(0)
+        y = rng.integers(0, 2, size=200)
+        p = rng.uniform(0, 1, size=200)
+
+        default = compute_scoring_metrics(y, p, metrics=['Sensitivity', 'Specificity'])
+        explicit = compute_scoring_metrics(
+            y, p, metrics=['Sensitivity', 'Specificity'], threshold=0.5
+        )
+
+        assert default == explicit
+
+    def test_hand_computed_confusion_metrics_at_a_non_default_threshold(self):
+        #                    0.10   0.30   0.60   0.90
+        y_true = np.array([0,     1,     0,     1])
+        y_proba = np.array([0.10, 0.30,  0.60,  0.90])
+        # At threshold 0.25: predicted positive = 0.30, 0.60, 0.90
+        # tp = 2 (0.30, 0.90), fp = 1 (0.60), tn = 1 (0.10), fn = 0
+        result = compute_scoring_metrics(
+            y_true,
+            y_proba,
+            metrics=['Sensitivity', 'Specificity', 'Precision', 'NPV', 'MCR'],
+            threshold=0.25,
+        )
+
+        assert result['Sensitivity'] == pytest.approx(1.0)      # 2 / (2 + 0)
+        assert result['Specificity'] == pytest.approx(0.5)      # 1 / (1 + 1)
+        assert result['Precision'] == pytest.approx(2 / 3)      # 2 / (2 + 1)
+        assert result['NPV'] == pytest.approx(1.0)              # 1 / (1 + 0)
+        assert result['MCR'] == pytest.approx(0.25)             # 1 / 4
+
+    def test_probability_exactly_at_the_threshold_classifies_as_control(self):
+        """Same strict-inequality convention the fixed 0.5 cut-off used."""
+        y_true = np.array([1, 1, 0, 0])
+        y_proba = np.array([0.7, 0.7, 0.7, 0.7])
+
+        result = compute_scoring_metrics(
+            y_true, y_proba, metrics=['Sensitivity', 'Specificity'], threshold=0.7
+        )
+
+        assert result['Sensitivity'] == 0.0
+        assert result['Specificity'] == 1.0
+
+    def test_raising_the_threshold_cannot_increase_sensitivity(self):
+        rng = np.random.default_rng(2)
+        y = rng.integers(0, 2, size=300)
+        p = rng.uniform(0, 1, size=300)
+
+        sensitivities = [
+            compute_scoring_metrics(y, p, metrics=['Sensitivity'], threshold=t)['Sensitivity']
+            for t in (0.2, 0.4, 0.6, 0.8)
+        ]
+
+        assert sensitivities == sorted(sensitivities, reverse=True)
+
+
+class TestNegativePredictiveValue:
+    def test_is_zero_when_nothing_is_predicted_negative(self):
+        """Follows the zero-denominator convention of the threshold family."""
+        y_true = np.array([0, 0, 1, 1])
+        y_proba = np.array([0.6, 0.7, 0.8, 0.9])  # every prediction above 0.5
+
+        result = compute_scoring_metrics(y_true, y_proba, metrics=['NPV'])
+
+        assert result['NPV'] == 0.0
+
+    def test_hand_computed_value(self):
+        y_true = np.array([0, 0, 1, 1])
+        y_proba = np.array([0.10, 0.90, 0.80, 0.20])
+        # tn = 1 (0.10), fn = 1 (0.20) -> NPV = 1 / 2
+        result = compute_scoring_metrics(y_true, y_proba, metrics=['NPV'])
+
+        assert result['NPV'] == pytest.approx(0.5)
+
+
 class TestSupportAccompaniesEveryMetric:
     def test_support_is_returned_even_for_a_single_metric_request(self):
         """No disparity number should be readable without its sample."""

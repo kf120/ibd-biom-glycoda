@@ -99,7 +99,7 @@ def compute_macro_avg_metrics(y_true, y_pred, n_classes):
     return macro_metrics
 
 THRESHOLD_METRIC_NAMES = frozenset(
-    {'MCC', 'BAcc', 'Sensitivity', 'Precision', 'Specificity', 'FPR', 'FNR', 'MCR'}
+    {'MCC', 'BAcc', 'Sensitivity', 'Precision', 'Specificity', 'NPV', 'FPR', 'FNR', 'MCR'}
 )
 ALL_METRIC_NAMES = (
     frozenset({'AUROC', 'AUPRC', 'LogLoss', 'Brier'})
@@ -216,7 +216,13 @@ def support_flag(
     return SUPPORT_FLAG_OK
 
 
-def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=None):
+def compute_scoring_metrics(
+    y_true,
+    y_pred_proba,
+    metrics=None,
+    model_classes=None,
+    threshold=0.5,
+):
     """Compute discrimination, probability-accuracy, and threshold metrics.
 
     Only the metric families needed to satisfy ``metrics`` are computed;
@@ -234,6 +240,11 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
         counts in ``SUPPORT_KEYS`` are returned regardless of this filter.
     model_classes : array-like, optional
         Explicit class ordering for the probability columns.
+    threshold : float, optional
+        Probability above which a participant is classified as a case in the
+        binary branch. Default 0.5, matching the historical fixed cut-off. A
+        probability exactly equal to ``threshold`` classifies as a control.
+        Ignored by the multiclass branch, which uses argmax.
 
     Returns
     -------
@@ -241,6 +252,13 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
         Discrimination, probability-accuracy, and threshold scores, always
         accompanied by the ``n``, ``n_cases``, and ``n_controls`` support counts
         so that no value can be read without its sample.
+
+    Notes
+    -----
+    Threshold metrics use a zero-denominator convention of 0.0 rather than NaN
+    (see ``tests/evaluation/test_metric_conventions.py``). Read them beside the
+    support counts: a specificity of 1.0 from zero controls means "no controls",
+    not "no false positives".
     """
     y_true = np.array(y_true)
     y_pred_proba = np.array(y_pred_proba)
@@ -273,6 +291,7 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
 
     auroc = auprc = log_loss_value = brier_score = None
     tpr = precision = tnr = fpr = fnr = misclassification_rate = mcc = bacc = None
+    npv = None
 
     if n_test_classes > 2 or n_model_classes > 2:
         # Multiclass case
@@ -334,8 +353,9 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
             brier_score = brier_score_loss(y_true, y_pred_proba_aligned)
 
         if need_threshold:
-            # Compute threshold-based metrics using the conventional half threshold
-            y_pred = (y_pred_proba_aligned > 0.5).astype(int)
+            # Strictly above the threshold classifies as a case, so a probability
+            # exactly equal to it predicts the control class.
+            y_pred = (y_pred_proba_aligned > threshold).astype(int)
 
             # Confusion matrix elements
             tp = np.sum((y_true == 1) & (y_pred == 1))
@@ -343,9 +363,12 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
             fp = np.sum((y_true == 0) & (y_pred == 1))
             fn = np.sum((y_true == 1) & (y_pred == 0))
 
-            # Compute threshold-based metrics
+            # Compute threshold-based metrics. Empty denominators return 0.0, the
+            # convention already fixed for the pre-existing metrics; NPV follows
+            # it so the whole threshold family reads the same way.
             tpr = tp / (tp + fn) if (tp + fn) > 0 else 0
             precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+            npv = tn / (tn + fn) if (tn + fn) > 0 else 0
             tnr = tn / (tn + fp) if (tn + fp) > 0 else 0
             fpr = fp / (fp + tn) if (fp + tn) > 0 else 0
             fnr = fn / (fn + tp) if (fn + tp) > 0 else 0
@@ -369,6 +392,8 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
         all_results['BAcc'] = bacc
         all_results['Sensitivity'] = tpr
         all_results['Precision'] = precision
+        # Undefined in the multiclass branch, which has no NPV macro-average.
+        all_results['NPV'] = npv if npv is not None else np.nan
         all_results['Specificity'] = tnr
         all_results['FPR'] = fpr
         all_results['FNR'] = fnr
