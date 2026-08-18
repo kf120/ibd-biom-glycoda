@@ -8,6 +8,8 @@ import pandas as pd
 import pytest
 
 from ibd_biom_glycoda.evaluation.subgroup_analysis import (
+    ESTIMABLE_KEY,
+    SUPPORT_KEYS,
     calculate_intersection_performance,
     calculate_subgroup_performance,
     plot_between_test_cohort_metrics_subgroup,
@@ -49,15 +51,39 @@ class TestCalculateSubgroupPerformance:
             assert 'Brier' in subgroup_metrics
             assert subgroup_metrics['Brier'] is not None
 
-    def test_single_class_subgroup_is_skipped(self, rng):
-        # Subgroup 1 has only class 0 -> must be excluded, not raise.
+    def test_single_class_subgroup_is_retained_as_not_estimable(self, rng):
+        """A subgroup with one outcome class stays visible with NaN metrics.
+
+        Dropping it would make the number of folds behind each subgroup mean
+        vary silently, and the folds that drop out are not a random sample:
+        they are the folds where the subgroup was smallest.
+        """
         true_labels = np.array([0, 1, 0, 1, 0, 0, 0])
         pred_proba = rng.uniform(0, 1, size=7)
         subgroup_labels = np.array([0, 0, 0, 0, 1, 1, 1])
 
         result = calculate_subgroup_performance(true_labels, pred_proba, subgroup_labels)
 
-        assert set(result.keys()) == {0}
+        assert set(result.keys()) == {0, 1}
+        assert result[1]['estimable'] == 0.0
+        assert result[1]['n'] == 3
+        assert result[1]['n_cases'] == 0
+        assert result[1]['n_controls'] == 3
+        assert np.isnan(result[1]['AUROC'])
+
+        assert result[0]['estimable'] == 1.0
+        assert result[0]['n_cases'] == 2 and result[0]['n_controls'] == 2
+        assert not np.isnan(result[0]['AUROC'])
+
+    def test_every_subgroup_carries_support_counts(self, two_group_data):
+        true_labels, pred_proba, subgroup_labels = two_group_data
+
+        result = calculate_subgroup_performance(true_labels, pred_proba, subgroup_labels)
+
+        for group, metrics in result.items():
+            mask = subgroup_labels == group
+            assert metrics['n'] == int(mask.sum())
+            assert metrics['n_cases'] + metrics['n_controls'] == metrics['n']
 
     def test_subgroup_names_used_as_keys(self, two_group_data):
         true_labels, pred_proba, subgroup_labels = two_group_data
@@ -70,14 +96,16 @@ class TestCalculateSubgroupPerformance:
         assert set(result.keys()) <= {'Male', 'Female'}
 
     def test_explicit_metrics_still_restricts_output(self, two_group_data):
+        """Requested metrics are restricted; support counts are not optional."""
         true_labels, pred_proba, subgroup_labels = two_group_data
 
         result = calculate_subgroup_performance(
             true_labels, pred_proba, subgroup_labels, metrics=['AUROC']
         )
 
+        expected = {'AUROC', *SUPPORT_KEYS, ESTIMABLE_KEY}
         for subgroup_metrics in result.values():
-            assert set(subgroup_metrics.keys()) == {'AUROC'}
+            assert set(subgroup_metrics.keys()) == expected
 
 
 class TestCalculateIntersectionPerformance:

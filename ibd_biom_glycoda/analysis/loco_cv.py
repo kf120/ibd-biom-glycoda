@@ -27,6 +27,8 @@ from ibd_biom_glycoda.evaluation.metrics import compute_scoring_metrics, aggrega
 from ibd_biom_glycoda.evaluation.subgroup_analysis import (
     calculate_subgroup_performance,
     calculate_intersection_performance,
+    SUPPORT_KEYS,
+    ESTIMABLE_KEY,
 )
 
 # Splits retained for fold-level and subgroup metrics.
@@ -1002,7 +1004,14 @@ def collect_loco_results(exp_results, results_raw, test_cohort, model_key, train
     results_raw[test_cohort][model_key].append(exp_results)
 
 def _fold_average_metric_dicts(per_fold_dicts):
-    """Average valid per-fold metric values without weighting."""
+    """Combine per-fold results: sum support counts, average scoring metrics.
+
+    Metrics are averaged only over the folds where they could be estimated. That
+    denominator varies between subgroups, so it is reported alongside the values
+    as ``n_folds`` and ``n_folds_estimable`` rather than left implicit: a
+    subgroup estimable in 2 of 5 folds has a mean built from 2 numbers, and
+    those 2 folds are not a random sample of the 5.
+    """
     if not per_fold_dicts:
         return {}
 
@@ -1016,8 +1025,18 @@ def _fold_average_metric_dicts(per_fold_dicts):
             fold_dict[key] for fold_dict in per_fold_dicts
             if fold_dict.get(key) is not None and not pd.isna(fold_dict[key])
         ]
-        if values:
+        if key in SUPPORT_KEYS:
+            averaged[key] = float(np.sum(values)) if values else 0.0
+        elif key == ESTIMABLE_KEY:
+            continue  # replaced by the explicit fold counters below
+        elif values:
             averaged[key] = float(np.mean(values))
+
+    averaged['n_folds'] = float(len(per_fold_dicts))
+    if ESTIMABLE_KEY in keys:
+        averaged['n_folds_estimable'] = float(sum(
+            1 for fold_dict in per_fold_dicts if fold_dict.get(ESTIMABLE_KEY)
+        ))
     return averaged
 
 

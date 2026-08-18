@@ -9,9 +9,43 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 from ibd_biom_glycoda.evaluation.metrics import compute_scoring_metrics, is_lower_better
-from ibd_biom_glycoda.evaluation.domain_generalization import parse_pipeline, _resolve_metric_axis_config, plot_between_test_cohort_metrics_from_summary
 
 DEFAULT_SUBGROUP_METRICS = ['AUROC', 'LogLoss', 'Brier', 'Sensitivity', 'Specificity']
+
+# Support counts accompany every subgroup result. They are summed rather than
+# averaged when fold results are combined, so they are named separately from the
+# scoring metrics.
+SUPPORT_KEYS = ('n', 'n_cases', 'n_controls')
+
+# 1.0 when the subgroup had both outcome classes and its metrics were computed,
+# 0.0 when the metrics are NaN because the subgroup was not estimable.
+ESTIMABLE_KEY = 'estimable'
+
+
+def _subgroup_support(true_labels_subset):
+    """Return support counts for one subgroup slice."""
+    y = np.asarray(true_labels_subset)
+    n_cases = int(np.sum(y == 1))
+    return {'n': int(y.size), 'n_cases': n_cases, 'n_controls': int(y.size) - n_cases}
+
+
+def _evaluate_subgroup(true_labels_subset, pred_subset, metrics):
+    """Score one subgroup, or mark it non-estimable without dropping it.
+
+    A subgroup with fewer than two outcome classes cannot support discrimination
+    or threshold metrics. Returning NaN metrics alongside the support counts keeps
+    the subgroup visible in every downstream table, so that a group missing from a
+    fold is distinguishable from a group that was simply never reached.
+    """
+    support = _subgroup_support(true_labels_subset)
+    y = np.asarray(true_labels_subset)
+
+    if y.size == 0 or len(np.unique(y)) < 2:
+        return {**support, ESTIMABLE_KEY: 0.0, **{m: np.nan for m in metrics}}
+
+    scored = compute_scoring_metrics(y, pred_subset, metrics=metrics)
+    return {**support, ESTIMABLE_KEY: 1.0, **scored}
+from ibd_biom_glycoda.evaluation.domain_generalization import parse_pipeline, _resolve_metric_axis_config, plot_between_test_cohort_metrics_from_summary
 
 def create_subgroup_metrics_dict(
                 y_train_true, y_train_pred, Z_train_bin, V_train, 
@@ -104,13 +138,11 @@ def calculate_subgroup_performance(true_labels, pred_proba_labels, subgroup_labe
     for group in unique_groups:
         mask = subgroup_labels == group
         
-        # Check if true_labels for this group contains more than one class
-        if len(np.unique(true_labels[mask])) == 1:
-            # Skip this subgroup if only one class is present
-            continue
-        
-        # Compute the metrics for subgroups with more than one class
-        subgroup_metrics = compute_scoring_metrics(true_labels[mask], pred_proba_labels[mask], metrics=metrics)
+        # Non-estimable subgroups are retained with NaN metrics rather than dropped,
+        # so that the number of folds contributing to each subgroup stays visible.
+        subgroup_metrics = _evaluate_subgroup(
+            true_labels[mask], pred_proba_labels[mask], metrics
+        )
         
         # Ensure 'group' is converted to a scalar type, not numpy array
         group_value = group.item() if isinstance(group, np.ndarray) else group
@@ -158,12 +190,11 @@ def calculate_intersection_performance(true_labels, pred_proba_labels, age_label
             sex_label = sex_subgroup_names.get(sex_value, sex_value) if sex_subgroup_names else sex_value
             
             mask = (age_labels == age) & (sex_labels == sex)
-            if len(np.unique(true_labels[mask])) < 2:
-                # Skip if only one class is present.
-                continue
-                
-            subgroup_metrics = compute_scoring_metrics(true_labels[mask], pred_proba_labels[mask], metrics=metrics)
-            performance_dict[age_label][sex_label] = subgroup_metrics
+            # Empty and single-class cells are reported with their support counts
+            # and NaN metrics rather than omitted.
+            performance_dict[age_label][sex_label] = _evaluate_subgroup(
+                true_labels[mask], pred_proba_labels[mask], metrics
+            )
     return performance_dict
 
 
