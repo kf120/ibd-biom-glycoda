@@ -186,7 +186,7 @@ def prepare_generalization_data_overall(
         Dictionary of metric DataFrames: {metric_name: df}
         Each df should be from prepare_loco_performance_data with columns:
         ['LOCO', 'Set', 'Model', 'Preprocessor', 'Estimator', '{Metric} Mean']
-        Example: {'auroc': df_auroc, 'ece': df_ece, 'sensitivity': df_sens, 'specificity': df_spec}
+        Example: {'auroc': df_auroc, 'brier': df_brier, 'sensitivity': df_sens, 'specificity': df_spec}
     group_by : str, default='Preprocessor'
         Column to group by: 'Preprocessor' or 'Estimator'
         - 'Preprocessor': Compare preprocessing methods (for a given model)
@@ -203,7 +203,7 @@ def prepare_generalization_data_overall(
     -------
     dict
         Nested dictionary: {method: {cohort: {metric_set: value}}}
-        Keys like 'auroc_<set_a>', 'ece_<set_b>', 'sensitivity_<set_a>', etc.
+        Keys like 'auroc_<set_a>', 'brier_<set_b>', 'sensitivity_<set_a>', etc.
     str
         Mode for plotting: 'preprocessing' or 'model'
     
@@ -212,7 +212,7 @@ def prepare_generalization_data_overall(
     >>> # Compare preprocessing methods for Logistic Regression
     >>> metric_dfs = {
     ...     'auroc': df_auroc,
-    ...     'ece': df_ece,
+    ...     'brier': df_brier,
     ...     'sensitivity': df_sens,
     ...     'specificity': df_spec
     ... }
@@ -356,7 +356,7 @@ def extract_metrics_for_plotting(results_dict, metrics=['auroc', 'logloss'], set
     Examples
     --------
     >>> # Extract AUROC and ECE for standard plot
-    >>> filtered = extract_metrics_for_plotting(results_dict, metrics=['auroc', 'ece'])
+    >>> filtered = extract_metrics_for_plotting(results_dict, metrics=['auroc', 'brier'])
     >>> fig, ax = plot_generalization_gaps(filtered, name='LR', mode='preprocessing')
     
     >>> # Extract sensitivity and specificity
@@ -1052,7 +1052,7 @@ def plot_between_test_cohort_metrics_from_summary(
     summary_df,
     model_names,
     preprocessor_names=None,
-    metrics=("AUROC", "ECE"),
+    metrics=("AUROC", "Brier"),
     palette="okabe_ito",
     metric_labels=None,
     figsize=(7.0, 5.5),
@@ -1159,7 +1159,7 @@ def plot_between_test_cohort_metrics_from_summary(
 def plot_between_test_cohort_metrics_overall(
     meta_summary,
     model_names,
-    metrics=("AUROC", "ECE"),
+    metrics=("AUROC", "Brier"),
     set_name="test_out",
     preprocessor_names=None,
     palette="okabe_ito",
@@ -1181,7 +1181,7 @@ def plot_between_test_cohort_metrics_overall(
         Output of ``summarize_loco_results_all``.
     model_name : Sequence[str]
         Tuple/list with one or two model identifiers to visualize (e.g., ('LR', 'RF')).
-    metrics : sequence of str, default ('AUROC', 'ECE')
+    metrics : sequence of str, default ('AUROC', 'Brier')
         Two metrics to visualise; first metric uses the left axis.
     set_name : str, default 'test_out'
         Evaluation split to plot ('train', 'val', 'test_in', 'test_out').

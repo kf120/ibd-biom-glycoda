@@ -7,140 +7,7 @@ import warnings
 import numpy as np
 from scipy.stats import t, sem
 from sklearn.metrics import roc_auc_score, average_precision_score, log_loss, brier_score_loss, matthews_corrcoef, balanced_accuracy_score
-from sklearn.calibration import calibration_curve
 from sklearn.preprocessing import label_binarize
-
-def compute_ece(y_true, y_proba, n_bins):
-    """
-    Return ECE using quantile-style binning via sklearn.
-    
-    Parameters:
-    -----------
-    y_true : array-like
-        True binary labels (0 or 1)
-    y_proba : array-like
-        Predicted probabilities
-    n_bins : int
-        Number of bins for calibration
-    
-    Returns:
-    --------
-    ece : float
-        Expected Calibration Error with quantile binning
-    """
-    y_true = np.asarray(y_true)
-    y_proba = np.asarray(y_proba)
-    
-    # Use sklearn's calibration_curve with quantile strategy
-    # This returns the true fraction of positives and mean predicted probabilities per bin
-    prob_true, prob_pred = calibration_curve(
-        y_true, 
-        y_proba, 
-        n_bins=n_bins, 
-        strategy='quantile'  # Use quantile binning
-    )
-    
-    # Compute bin sizes
-    # Need to reconstruct which samples fall into which bin
-    quantiles = np.linspace(0, 1, n_bins + 1)
-    bin_edges = np.quantile(y_proba, quantiles)
-    bin_edges[-1] = bin_edges[-1] + 1e-8  # Ensure last bin captures max values
-    
-    # Assign samples to bins
-    bin_indices = np.digitize(y_proba, bin_edges[:-1]) - 1
-    bin_indices = np.clip(bin_indices, 0, n_bins - 1)
-    
-    # Compute ECE
-    ece = 0.0
-    n_samples = len(y_true)
-    
-    for i in range(len(prob_true)):
-        # Count samples in this bin
-        n_i = np.sum(bin_indices == i)
-        
-        if n_i > 0:
-            bin_error = np.abs(prob_true[i] - prob_pred[i])
-            ece += (n_i / n_samples) * bin_error
-    
-    return ece
-
-
-def compute_brier_score_decomposition(y_true, y_proba):
-    """Return Brier score decomposition terms."""
-    y_true = np.asarray(y_true, dtype=float)
-    y_proba = np.asarray(y_proba, dtype=float)
-
-    brier = brier_score_loss(y_true, y_proba)
-    base_rate = np.mean(y_true)
-    uncertainty = base_rate * (1 - base_rate)
-    n = len(y_true)
-
-    # Aggregate samples with identical predicted probabilities.
-    unique_preds, inverse, counts = np.unique(
-        y_proba, return_inverse=True, return_counts=True
-    )
-    inverse = inverse.ravel()
-    sum_true_per_bin = np.bincount(inverse, weights=y_true, minlength=len(unique_preds))
-    observed_freq = sum_true_per_bin / counts
-    weights = counts / n
-
-    reliability = np.sum(weights * (unique_preds - observed_freq) ** 2)
-    resolution = np.sum(weights * (observed_freq - base_rate) ** 2)
-
-    resolution_ratio = resolution / uncertainty if uncertainty > 0 else np.nan
-    decomposition_check = uncertainty - resolution + reliability
-
-    return {
-        'brier': brier,
-        'reliability': reliability,
-        'resolution': resolution,
-        'uncertainty': uncertainty,
-        'resolution_ratio': resolution_ratio,
-        'decomposition_check': decomposition_check
-    }
-
-def compute_calibration_metrics(y_true, y_proba, n_bins=10):
-    """
-    Compute calibration metrics: ECE and Brier score decomposition.
-    
-    Parameters
-    ----------
-    y_true : array-like
-        True binary labels
-    y_proba : array-like
-        Predicted probabilities
-    n_bins : int, default=10
-        Number of bins for ECE only
-    
-    Returns
-    -------
-    metrics : dict
-        Dictionary with calibration metrics
-    """    
-    y_true = np.asarray(y_true)
-    y_proba = np.asarray(y_proba)
-    
-    # Handle edge case: if all predictions are the same
-    if len(np.unique(y_proba)) == 1:
-        base_rate = np.mean(y_true)
-        uncertainty = base_rate * (1 - base_rate)
-        resolution = 0.0
-        return {
-            'ece': 0.0,
-            'brier': brier_score_loss(y_true, y_proba),
-            'reliability': 0.0,
-            'resolution': resolution,
-            'uncertainty': uncertainty,
-            'resolution_ratio': (resolution / uncertainty) if uncertainty > 0 else np.nan,
-        }
-    
-    ece = compute_ece(y_true, y_proba, n_bins)
-    brier_metrics = compute_brier_score_decomposition(y_true, y_proba)
-
-    return {
-        'ece': ece,
-        **brier_metrics
-    }
 
 def compute_ovr_metrics(y_true, y_pred, n_classes):
     """Compute one-versus-rest threshold metrics for each observed class.
@@ -228,22 +95,17 @@ def compute_macro_avg_metrics(y_true, y_pred, n_classes):
     macro_metrics = {key: metrics_sum[key] / n_present for key in metrics_sum}
     return macro_metrics
 
-CALIBRATION_METRIC_NAMES = frozenset(
-    {'ECE', 'Reliability', 'Resolution', 'Uncertainty', 'Resolution Ratio'}
-)
 THRESHOLD_METRIC_NAMES = frozenset(
     {'MCC', 'BAcc', 'Sensitivity', 'Precision', 'Specificity', 'FPR', 'FNR', 'MCR'}
 )
 ALL_METRIC_NAMES = (
     frozenset({'AUROC', 'AUPRC', 'LogLoss', 'Brier'})
-    | CALIBRATION_METRIC_NAMES
     | THRESHOLD_METRIC_NAMES
 )
 
 LOWER_IS_BETTER_KEYWORDS = frozenset({
-    'ece', 'logloss', 'loss', 'brier', 'mce', 'mcr', 'fpr', 'fnr',
-    'uncertainty', 'error', 'nll', 'rmse', 'mae', 'mse', 'calibration',
-    'misclassification', 'reliability'
+    'logloss', 'loss', 'brier', 'mce', 'mcr', 'fpr', 'fnr',
+    'error', 'nll', 'rmse', 'mae', 'mse', 'misclassification'
 })
 
 
@@ -258,7 +120,7 @@ def is_lower_better(metric_name):
 
 
 def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=None):
-    """Compute discrimination, calibration, and threshold metrics.
+    """Compute discrimination, probability-accuracy, and threshold metrics.
 
     Only the metric families needed to satisfy ``metrics`` are computed;
     requesting a small subset skips the unrequested families entirely
@@ -278,7 +140,7 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
     Returns
     -------
     dict
-        Dictionary containing discrimination scores, calibration summaries, and threshold metrics.
+        Dictionary containing discrimination scores, probability-accuracy scores, and threshold metrics.
     """
     y_true = np.array(y_true)
     y_pred_proba = np.array(y_pred_proba)
@@ -288,7 +150,6 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
     need_auprc = 'AUPRC' in requested
     need_logloss = 'LogLoss' in requested
     need_brier = 'Brier' in requested
-    need_calibration = bool(requested & CALIBRATION_METRIC_NAMES)
     need_threshold = bool(requested & THRESHOLD_METRIC_NAMES)
 
     # Get unique classes in test set
@@ -311,7 +172,6 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
         )
 
     auroc = auprc = log_loss_value = brier_score = None
-    ece = reliability = resolution = uncertainty = resolution_ratio = None
     tpr = precision = tnr = fpr = fnr = misclassification_rate = mcc = bacc = None
 
     if n_test_classes > 2 or n_model_classes > 2:
@@ -341,33 +201,6 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
 
         if need_logloss:
             log_loss_value = log_loss(y_true, y_pred_proba_aligned)
-
-        if need_calibration:
-            # Compute calibration metrics (OVR macro-averaging)
-            ece_list = []
-            reliability_list = []
-            resolution_list = []
-            uncertainty_list = []
-            resolution_ratio_list = []
-
-            for class_idx, class_label in enumerate(test_classes):
-                # One-vs-Rest: binary problem for this class
-                y_true_binary = (y_true == class_label).astype(int)
-                y_proba_class = y_pred_proba_aligned[:, class_idx]
-
-                cal_metrics = compute_calibration_metrics(y_true_binary, y_proba_class)
-                ece_list.append(cal_metrics['ece'])
-                reliability_list.append(cal_metrics['reliability'])
-                resolution_list.append(cal_metrics['resolution'])
-                uncertainty_list.append(cal_metrics['uncertainty'])
-                resolution_ratio_list.append(cal_metrics['resolution_ratio'])
-
-            # Macro-average calibration metrics
-            ece = np.mean(ece_list)
-            reliability = np.mean(reliability_list)
-            resolution = np.mean(resolution_list)
-            uncertainty = np.mean(uncertainty_list)
-            resolution_ratio = np.nanmean(resolution_ratio_list)
 
         if need_threshold:
             # Compute threshold-based metrics using OVR macro-averaging
@@ -400,14 +233,6 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
         if need_brier:
             brier_score = brier_score_loss(y_true, y_pred_proba_aligned)
 
-        if need_calibration:
-            cal_metrics = compute_calibration_metrics(y_true, y_pred_proba_aligned)
-            ece = cal_metrics['ece']
-            reliability = cal_metrics['reliability']
-            resolution = cal_metrics['resolution']
-            uncertainty = cal_metrics['uncertainty']
-            resolution_ratio = cal_metrics['resolution_ratio']
-
         if need_threshold:
             # Compute threshold-based metrics using the conventional half threshold
             y_pred = (y_pred_proba_aligned > 0.5).astype(int)
@@ -439,12 +264,6 @@ def compute_scoring_metrics(y_true, y_pred_proba, metrics=None, model_classes=No
         all_results['LogLoss'] = log_loss_value
     if need_brier:
         all_results['Brier'] = brier_score
-    if need_calibration:
-        all_results['ECE'] = ece
-        all_results['Reliability'] = reliability
-        all_results['Resolution'] = resolution
-        all_results['Uncertainty'] = uncertainty
-        all_results['Resolution Ratio'] = resolution_ratio
     if need_threshold:
         all_results['MCC'] = mcc
         all_results['BAcc'] = bacc

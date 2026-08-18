@@ -1,4 +1,4 @@
-"""Tests for scoring metrics and Brier decomposition."""
+"""Tests for scoring metrics."""
 
 import warnings
 
@@ -7,99 +7,14 @@ import pytest
 
 from ibd_biom_glycoda.evaluation.metrics import (
     ALL_METRIC_NAMES,
-    compute_brier_score_decomposition,
     compute_scoring_metrics,
     summarize_scoring_metrics,
 )
 
 
-def _reference_brier_decomposition(y_true, y_proba):
-    """Compute Brier components with a loop-based test oracle."""
-    from sklearn.metrics import brier_score_loss
-
-    y_true = np.asarray(y_true, dtype=float)
-    y_proba = np.asarray(y_proba, dtype=float)
-
-    brier = brier_score_loss(y_true, y_proba)
-    base_rate = np.mean(y_true)
-    uncertainty = base_rate * (1 - base_rate)
-
-    unique_preds = np.unique(y_proba)
-    reliability = 0.0
-    resolution = 0.0
-
-    for pred_val in unique_preds:
-        mask = y_proba == pred_val
-        n_k = np.sum(mask)
-        if n_k == 0:
-            continue
-        observed_freq = np.mean(y_true[mask])
-        reliability += (n_k / len(y_true)) * (pred_val - observed_freq) ** 2
-        resolution += (n_k / len(y_true)) * (observed_freq - base_rate) ** 2
-
-    resolution_ratio = resolution / uncertainty if uncertainty > 0 else np.nan
-    decomposition_check = uncertainty - resolution + reliability
-
-    return {
-        'brier': brier,
-        'reliability': reliability,
-        'resolution': resolution,
-        'uncertainty': uncertainty,
-        'resolution_ratio': resolution_ratio,
-        'decomposition_check': decomposition_check,
-    }
-
-
 @pytest.fixture
 def rng():
     return np.random.default_rng(0)
-
-
-class TestComputeBrierScoreDecomposition:
-    def test_matches_reference_loop_with_ties(self, rng):
-        y_true = rng.integers(0, 2, size=200)
-        # Round probabilities so several samples share exact values (ties),
-        # exercising the bincount grouping path.
-        y_proba = np.round(rng.uniform(0, 1, size=200), 2)
-
-        result = compute_brier_score_decomposition(y_true, y_proba)
-        reference = _reference_brier_decomposition(y_true, y_proba)
-
-        for key in reference:
-            assert result[key] == pytest.approx(reference[key], abs=1e-12, nan_ok=True)
-
-    def test_matches_reference_loop_all_unique(self, rng):
-        y_true = rng.integers(0, 2, size=50)
-        y_proba = rng.uniform(0, 1, size=50)  # continuous -> all unique w.h.p.
-        assert len(np.unique(y_proba)) == 50
-
-        result = compute_brier_score_decomposition(y_true, y_proba)
-        reference = _reference_brier_decomposition(y_true, y_proba)
-
-        for key in reference:
-            assert result[key] == pytest.approx(reference[key], abs=1e-12, nan_ok=True)
-
-    def test_degenerate_when_all_predictions_unique(self, rng):
-        """Unique predictions produce singleton-bin degeneracy."""
-        y_true = rng.integers(0, 2, size=30)
-        y_proba = rng.uniform(0, 1, size=30)
-
-        result = compute_brier_score_decomposition(y_true, y_proba)
-
-        assert result['reliability'] == pytest.approx(result['brier'], abs=1e-9)
-        assert result['resolution'] == pytest.approx(result['uncertainty'], abs=1e-9)
-
-    def test_single_unique_probability(self):
-        # base rate == the single predicted probability (0.5) so both terms
-        # collapse to zero: the one bin's observed frequency equals both the
-        # prediction and the base rate.
-        y_true = np.array([0, 1, 1, 0])
-        y_proba = np.full(4, 0.5)
-
-        result = compute_brier_score_decomposition(y_true, y_proba)
-
-        assert result['reliability'] == pytest.approx(0.0, abs=1e-12)
-        assert result['resolution'] == pytest.approx(0.0, abs=1e-12)
 
 
 class TestComputeScoringMetricsGating:
@@ -133,7 +48,6 @@ class TestComputeScoringMetricsGating:
             ['AUPRC'],
             ['LogLoss'],
             ['Brier'],
-            ['ECE', 'Reliability', 'Resolution', 'Uncertainty', 'Resolution Ratio'],
             ['Sensitivity', 'Specificity', 'MCC', 'BAcc', 'Precision', 'FPR', 'FNR', 'MCR'],
         ],
     )
@@ -152,7 +66,6 @@ class TestComputeScoringMetricsGating:
             ['AUROC'],
             ['AUPRC'],
             ['Brier'],
-            ['ECE', 'Reliability', 'Resolution', 'Uncertainty', 'Resolution Ratio'],
             ['Sensitivity', 'Specificity', 'MCC', 'BAcc'],
         ],
     )
@@ -164,14 +77,6 @@ class TestComputeScoringMetricsGating:
         assert set(subset.keys()) == set(metrics)
         for key in metrics:
             assert subset[key] == pytest.approx(full[key], abs=1e-12, nan_ok=True)
-
-    def test_resolution_ratio_is_populated_and_correct(self, binary_data):
-        y_true, y_proba = binary_data
-        result = compute_scoring_metrics(
-            y_true, y_proba, metrics=['Resolution Ratio', 'Resolution', 'Uncertainty']
-        )
-        expected = result['Resolution'] / result['Uncertainty']
-        assert result['Resolution Ratio'] == pytest.approx(expected, abs=1e-12)
 
     def test_unknown_metric_name_is_silently_ignored(self, binary_data):
         """Matches pre-existing behaviour: unrecognised names are dropped,

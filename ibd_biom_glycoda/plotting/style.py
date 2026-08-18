@@ -743,7 +743,7 @@ def generate_semantic_colors(palette='okabe_ito', preview=True):
     
     # Define test sets
     diseases = ['HC', 'SC', 'Non-IBD', 'CD', 'UC', 'IBD']
-    metrics = ['AUROC', 'ECE', 'LogLoss', 'Brier']
+    metrics = ['AUROC', 'AUPRC', 'LogLoss', 'Brier']
     cohorts = ['UK', 'US', 'IT', 'NL']
     subgroups = ['<40 | M', '<40 | F', '>40 | M', '>40 | F']
     processors = ['Raw', 'CLR', 'GlyCmp']

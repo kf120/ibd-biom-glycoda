@@ -40,14 +40,14 @@ class TestCalculateSubgroupPerformance:
             assert 'Sensitivity' in subgroup_metrics
             assert 'Specificity' in subgroup_metrics
 
-    def test_default_metrics_include_resolution_ratio(self, two_group_data):
+    def test_default_metrics_include_brier(self, two_group_data):
         true_labels, pred_proba, subgroup_labels = two_group_data
 
         result = calculate_subgroup_performance(true_labels, pred_proba, subgroup_labels)
 
         for subgroup_metrics in result.values():
-            assert 'Resolution Ratio' in subgroup_metrics
-            assert subgroup_metrics['Resolution Ratio'] is not None
+            assert 'Brier' in subgroup_metrics
+            assert subgroup_metrics['Brier'] is not None
 
     def test_single_class_subgroup_is_skipped(self, rng):
         # Subgroup 1 has only class 0 -> must be excluded, not raise.
@@ -137,9 +137,9 @@ class TestPlotBetweenTestCohortMetricsSubgroupModelMatching:
              'Pooled SEM': 0.01, 'Lower CI': 0.97, 'Upper CI': 1.00},
             {'Model': 'LR+CLR', 'Metric': 'AUROC', 'Pooled Mean': 0.50,
              'Pooled SEM': 0.01, 'Lower CI': 0.48, 'Upper CI': 0.52},
-            {'Model': 'XB+CLR', 'Metric': 'ECE', 'Pooled Mean': 0.10,
+            {'Model': 'XB+CLR', 'Metric': 'Brier', 'Pooled Mean': 0.10,
              'Pooled SEM': 0.01, 'Lower CI': 0.08, 'Upper CI': 0.12},
-            {'Model': 'LR+CLR', 'Metric': 'ECE', 'Pooled Mean': 0.60,
+            {'Model': 'LR+CLR', 'Metric': 'Brier', 'Pooled Mean': 0.60,
              'Pooled SEM': 0.01, 'Lower CI': 0.58, 'Upper CI': 0.62},
         ])
         return {'subgroups': {'test_out': {'age_sex': {'<40 | M': df_group}}}}
@@ -151,7 +151,7 @@ class TestPlotBetweenTestCohortMetricsSubgroupModelMatching:
             meta_summary,
             model_names=('LR', 'XB'),
             subgroup_var='age_sex',
-            metrics=('AUROC', 'ECE'),
+            metrics=('AUROC', 'Brier'),
             set_name='test_out',
             groups=['<40 | M'],
             preprocessor_names=['CLR'],

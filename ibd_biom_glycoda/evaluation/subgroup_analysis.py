@@ -11,6 +11,8 @@ from matplotlib.patches import Patch
 from ibd_biom_glycoda.evaluation.metrics import compute_scoring_metrics, is_lower_better
 from ibd_biom_glycoda.evaluation.domain_generalization import parse_pipeline, _resolve_metric_axis_config, plot_between_test_cohort_metrics_from_summary
 
+DEFAULT_SUBGROUP_METRICS = ['AUROC', 'LogLoss', 'Brier', 'Sensitivity', 'Specificity']
+
 def create_subgroup_metrics_dict(
                 y_train_true, y_train_pred, Z_train_bin, V_train, 
                 y_val_in_true, y_val_in_pred, Z_val_in_bin, V_val_in, 
@@ -74,7 +76,7 @@ def create_subgroup_metrics_dict(
 
 
 
-def calculate_subgroup_performance(true_labels, pred_proba_labels, subgroup_labels, group_name=None, subgroup_names=None, metrics=['AUROC', 'ECE', 'LogLoss', 'Brier', 'Resolution Ratio', 'Reliability', 'Sensitivity', 'Specificity']):
+def calculate_subgroup_performance(true_labels, pred_proba_labels, subgroup_labels, group_name=None, subgroup_names=None, metrics=DEFAULT_SUBGROUP_METRICS):
     """
     Calculate and return metrics for each subgroup with interpretable subgroup names.
     
@@ -121,7 +123,7 @@ def calculate_subgroup_performance(true_labels, pred_proba_labels, subgroup_labe
     return performance_dict
 
 def calculate_intersection_performance(true_labels, pred_proba_labels, age_labels, sex_labels,
-                                       age_subgroup_names=None, sex_subgroup_names=None, metrics=['AUROC', 'ECE', 'LogLoss', 'Brier', 'Resolution Ratio', 'Reliability', 'Sensitivity', 'Specificity']):
+                                       age_subgroup_names=None, sex_subgroup_names=None, metrics=DEFAULT_SUBGROUP_METRICS):
     """
     Compute performance metrics for the intersection of age and sex subgroups.
     
@@ -321,7 +323,7 @@ def prepare_generalization_data_all_subgroups(
         AUROC detail data from prepare_loco_subgroup_data
         Columns: ['Cohort', 'Split', 'Pipeline', 'Age', 'Sex', 'Mean', 'SEM', 'Subgroup']
     df_ece_detail : pd.DataFrame
-        ECE detail data from prepare_loco_subgroup_data
+        Second-metric detail data from prepare_loco_subgroup_data
     group_by : str, default='Preprocessor'
         Column to group by: 'Preprocessor' or 'Estimator'
     filter_value : str, optional
@@ -331,7 +333,7 @@ def prepare_generalization_data_all_subgroups(
         If None, uses all available subgroups
     metric_names : tuple/list of str, default=('metric1', 'metric2')
         Human-readable names for the two metrics being compared, used to label
-        output keys (e.g., ('AUROC', 'ECE')).
+        output keys (e.g., ('AUROC', 'Brier')).
     sets : sequence of str, default ('test_in', 'test_out')
         Exactly two evaluation splits to extract (e.g., ('val_in', 'test_in')).
         The first entry acts as the reference split and the second as the
@@ -353,7 +355,7 @@ def prepare_generalization_data_all_subgroups(
     ...     subgroup_analyses_loco, metric='AUROC'
     ... )
     >>> df_ece_detail, _ = prepare_loco_subgroup_data(
-    ...     subgroup_analyses_loco, metric='ECE'
+    ...     subgroup_analyses_loco, metric='Brier'
     ... )
     >>> 
     >>> # Prepare data for all subgroups, LR model, compare preprocessing
@@ -362,7 +364,7 @@ def prepare_generalization_data_all_subgroups(
     ...     group_by='Preprocessor',
     ...     filter_value='LR',
     ...     subgroups=['<40_Male', '<40_Female', '40-60_Male', '40-60_Female'],
-    ...     metric_names=('AUROC', 'ECE')
+    ...     metric_names=('AUROC', 'Brier')
     ... )
     >>> 
     >>> # Then plot
@@ -398,7 +400,7 @@ def prepare_generalization_data_all_subgroups(
 
     metric1_name, metric2_name = metric_names
 
-    # Merge AUROC and ECE data
+    # Merge the two requested metric frames
     df_merged = df_metric1_detail.merge(
         df_metric2_detail,
         on=['Cohort', 'Split', 'Pipeline', 'Age', 'Sex', 'Subgroup', 'Preprocessor', 'Estimator'],
@@ -555,7 +557,7 @@ def plot_generalization_gaps_subgroups(
     sets=('test_in', 'test_out')
 ):
     """
-    Plot subgroup-level generalization gaps between two metrics (e.g., AUROC vs ECE).
+    Plot subgroup-level generalization gaps between two metrics (e.g., AUROC vs Brier).
     Each point represents the average gap across cohorts for a specific method/model and subgroup.
 
     Parameters
@@ -864,7 +866,7 @@ def plot_between_test_cohort_metrics_subgroup(
     meta_summary,
     model_names,
     subgroup_var,
-    metrics=("AUROC", "ECE"),
+    metrics=("AUROC", "Brier"),
     set_name="test_out",
     groups=None,
     preprocessor_names=None,
@@ -891,7 +893,7 @@ def plot_between_test_cohort_metrics_subgroup(
         different colors.
     subgroup_var : str
         Subgroup variable key within ``meta_summary['subgroups'][set_name]``.
-    metrics : sequence of str, default ('AUROC', 'ECE')
+    metrics : sequence of str, default ('AUROC', 'Brier')
         Two metrics to plot; left axis uses the first metric.
     set_name : str, default 'test_out'
         Evaluation split to visualize.
