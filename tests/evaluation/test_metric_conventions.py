@@ -117,14 +117,29 @@ class TestIsLowerBetter:
     def test_performance_metrics_are_higher_better(self, metric):
         assert not is_lower_better(metric)
 
-    @pytest.mark.parametrize("metric", ['Calibration Slope', 'Calibration Intercept'])
+    @pytest.mark.parametrize(
+        "metric",
+        [
+            'Calibration Slope',
+            'Calibration Intercept',
+            'CalibrationSlope',
+            'CalibrationIntercept',
+        ],
+    )
     def test_calibration_targets_are_not_classified_as_lower_better(self, metric):
         """These target a value (1 and 0), not a direction.
 
         The keyword list must not claim a direction for them, or a plot would
-        rank a slope of 0.5 above a slope of 1.0.
+        rank a slope of 0.5 above a slope of 1.0. Both the spaced display form
+        and the metric key are covered, since either can reach a plot label.
         """
         assert not is_lower_better(metric)
+
+    def test_model_based_c_statistic_is_not_classified_as_lower_better(self):
+        assert not is_lower_better('ModelBasedAUROC')
+
+    def test_npv_is_not_classified_as_lower_better(self):
+        assert not is_lower_better('NPV')
 
 
 class TestRequestedMetricsAreHonoured:

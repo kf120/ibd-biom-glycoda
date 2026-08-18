@@ -105,6 +105,7 @@ def compute_macro_avg_metrics(y_true, y_pred, n_classes):
 THRESHOLD_METRIC_NAMES = frozenset(
     {'MCC', 'BAcc', 'Sensitivity', 'Precision', 'Specificity', 'NPV', 'FPR', 'FNR', 'MCR'}
 )
+
 # Calibration and the model-based c-statistic are binary-only quantities: both
 # are defined on a single predicted probability per participant. The multiclass
 # branch returns NaN for them rather than inventing a macro-average.
@@ -138,6 +139,17 @@ LOWER_IS_BETTER_KEYWORDS = frozenset({
     'error', 'nll', 'rmse', 'mae', 'mse', 'misclassification'
 })
 
+# Metrics whose ideal is a target value rather than a direction. A calibration
+# slope of 1.4 is as poor as one of 0.6, so "worst" for these means "furthest
+# from the target", not "smallest". ``is_lower_better`` cannot express that, and
+# silently reports False for them, which would rank an over-shrunk model best.
+TARGET_VALUED_METRICS = {
+    'CalibrationSlope': 1.0,
+    'Calibration Slope': 1.0,
+    'CalibrationIntercept': 0.0,
+    'Calibration Intercept': 0.0,
+}
+
 # Minimum support below which a subgroup estimate is flagged rather than read as
 # evidence. Pre-specified in the analysis plan; not tuned to observed results.
 MIN_CASES_FOR_SUPPORT = 20
@@ -153,9 +165,45 @@ def is_lower_better(metric_name):
 
     Shared by the generalization-gap plots and the LOCO worst-cohort summary so
     new metrics get a consistent direction in both.
+
+    Target-valued metrics such as the calibration slope have no direction, so
+    this returns False for them. Callers that rank cohorts or subgroups should
+    use :func:`metric_distance_from_ideal`, which handles both cases.
     """
     name_norm = metric_name.lower().replace('_', ' ')
     return any(keyword in name_norm for keyword in LOWER_IS_BETTER_KEYWORDS)
+
+
+def is_target_valued(metric_name):
+    """Return True if ``metric_name`` is scored by closeness to a target value."""
+    return metric_name in TARGET_VALUED_METRICS
+
+
+def metric_distance_from_ideal(metric_name, value):
+    """Return a loss-like score for ``value``, where larger always means worse.
+
+    This is the ranking key that works for all three metric shapes: higher-is-
+    better, lower-is-better, and target-valued. Ranking a calibration slope with
+    ``is_lower_better`` alone would place 0.5 above 1.0.
+
+    Parameters
+    ----------
+    metric_name : str
+        Name of the metric being ranked.
+    value : float
+        Observed value of the metric.
+
+    Returns
+    -------
+    float
+        Larger values indicate worse performance. NaN input returns NaN.
+    """
+    value = float(value)
+    if np.isnan(value):
+        return np.nan
+    if is_target_valued(metric_name):
+        return abs(value - TARGET_VALUED_METRICS[metric_name])
+    return value if is_lower_better(metric_name) else -value
 
 
 def compute_support(y_true):
@@ -495,9 +543,9 @@ def compute_scoring_metrics(
     Returns
     -------
     dict
-        Discrimination, probability-accuracy, and threshold scores, always
-        accompanied by the ``n``, ``n_cases``, and ``n_controls`` support counts
-        so that no value can be read without its sample.
+        Discrimination, probability-accuracy, calibration, and threshold scores,
+        always accompanied by the ``n``, ``n_cases``, and ``n_controls`` support
+        counts so that no value can be read without its sample.
 
     Notes
     -----

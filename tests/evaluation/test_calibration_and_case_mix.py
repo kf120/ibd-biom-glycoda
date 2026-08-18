@@ -23,6 +23,7 @@ from ibd_biom_glycoda.evaluation.metrics import (
     SUPPORT_FLAG_OK,
     SUPPORT_KEYS,
     case_fraction,
+    metric_distance_from_ideal,
     compute_calibration_intercept,
     compute_calibration_slope,
     compute_model_based_c_statistic,
@@ -373,3 +374,29 @@ class TestSupportFlag:
 
         assert support_flag(support) == SUPPORT_FLAG_LOW
         assert support_flag(support, min_cases=5, min_controls=5) == SUPPORT_FLAG_OK
+
+
+class TestMetricDistanceFromIdeal:
+    def test_target_valued_slope_ranks_by_distance_from_one(self):
+        """The trap this exists to close: a slope of 0.6 must not outrank 1.0."""
+        assert metric_distance_from_ideal('CalibrationSlope', 1.0) == pytest.approx(0.0)
+        assert metric_distance_from_ideal('CalibrationSlope', 0.6) == pytest.approx(0.4)
+        assert metric_distance_from_ideal('CalibrationSlope', 1.4) == pytest.approx(0.4)
+
+    def test_over_and_under_shrinkage_score_equally_badly(self):
+        assert metric_distance_from_ideal('CalibrationSlope', 0.5) == pytest.approx(
+            metric_distance_from_ideal('CalibrationSlope', 1.5)
+        )
+
+    def test_intercept_targets_zero(self):
+        assert metric_distance_from_ideal('CalibrationIntercept', 0.0) == pytest.approx(0.0)
+        assert metric_distance_from_ideal('CalibrationIntercept', -0.7) == pytest.approx(0.7)
+
+    def test_higher_is_better_metrics_keep_their_direction(self):
+        assert metric_distance_from_ideal('AUROC', 0.9) < metric_distance_from_ideal('AUROC', 0.6)
+
+    def test_lower_is_better_metrics_keep_their_direction(self):
+        assert metric_distance_from_ideal('LogLoss', 0.2) < metric_distance_from_ideal('LogLoss', 0.9)
+
+    def test_nan_propagates(self):
+        assert np.isnan(metric_distance_from_ideal('AUROC', np.nan))

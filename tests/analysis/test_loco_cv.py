@@ -606,6 +606,31 @@ class TestComputeWorstCohort:
     def test_empty_cohort_means_returns_none(self):
         assert _compute_worst_cohort('AUROC', []) is None
 
+    def test_target_valued_metric_reports_the_cohort_furthest_from_its_target(self):
+        """A calibration slope has no direction. Ranking it by raw value would
+        name the best-calibrated cohort as the worst whenever the miscalibrated
+        one over-shrinks."""
+        cohort_means = [('UK', 1.00), ('US', 1.60), ('IT', 0.95)]
+        assert _compute_worst_cohort('CalibrationSlope', cohort_means) == 'US'
+
+    def test_target_valued_metric_also_catches_under_shrinkage(self):
+        cohort_means = [('UK', 1.00), ('US', 1.10), ('IT', 0.40)]
+        assert _compute_worst_cohort('CalibrationSlope', cohort_means) == 'IT'
+
+    def test_calibration_intercept_targets_zero_in_both_directions(self):
+        cohort_means = [('UK', 0.05), ('US', -0.90), ('IT', 0.30)]
+        assert _compute_worst_cohort('CalibrationIntercept', cohort_means) == 'US'
+
+    def test_cohorts_with_nan_values_are_not_named_worst(self):
+        """A missing estimate is not a poor one; naming it worst would turn a
+        non-estimable subgroup into a reported failure."""
+        cohort_means = [('UK', 0.90), ('US', float('nan')), ('IT', 0.75)]
+        assert _compute_worst_cohort('AUROC', cohort_means) == 'IT'
+
+    def test_all_nan_cohort_means_returns_none(self):
+        cohort_means = [('UK', float('nan')), ('US', float('nan'))]
+        assert _compute_worst_cohort('AUROC', cohort_means) is None
+
 
 class TestWorkerOutputIsAsciiSafe:
     """Tests compatibility with ASCII-only worker output streams."""

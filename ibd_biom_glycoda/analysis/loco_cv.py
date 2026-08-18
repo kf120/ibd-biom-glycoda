@@ -31,7 +31,7 @@ from ibd_biom_glycoda.evaluation.metrics import (
     compute_scoring_metrics,
     aggregate_all_metrics,
     summarize_scoring_metrics,
-    is_lower_better,
+    metric_distance_from_ideal,
     SUPPORT_KEYS,
     ESTIMABLE_KEY,
 )
@@ -1623,12 +1623,23 @@ def _infer_loco_summary_defaults(results_loco_test_cohorts, sets, metrics, model
 
 
 def _compute_worst_cohort(metric, cohort_means):
-    """Return worst-performing cohort name for a metric."""
+    """Return worst-performing cohort name for a metric.
+
+    Ranks by distance from the metric's ideal rather than by raw value, so that
+    a target-valued metric such as the calibration slope is not scored as if
+    smaller were better. Cohorts whose value is NaN are not eligible to be named
+    worst, since a missing estimate is not a poor one.
+    """
     if not cohort_means:
         return None
-    if is_lower_better(metric):
-        return max(cohort_means, key=lambda x: x[1])[0]
-    return min(cohort_means, key=lambda x: x[1])[0]
+    scored = [
+        (name, metric_distance_from_ideal(metric, value))
+        for name, value in cohort_means
+    ]
+    scored = [(name, loss) for name, loss in scored if not pd.isna(loss)]
+    if not scored:
+        return None
+    return max(scored, key=lambda x: x[1])[0]
 
 
 def _round_summary_frame(df):
