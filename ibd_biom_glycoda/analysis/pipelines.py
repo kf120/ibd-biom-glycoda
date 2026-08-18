@@ -11,6 +11,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
 
 from ibd_biom_glycoda.utils.helpers import seed_everything
+from ibd_biom_glycoda.data.dataset import UNKNOWN_COHORT_INDEX, UNKNOWN_COHORT_LABEL
 
 
 def combine_features_with_covariates(X, Z):
@@ -61,8 +62,19 @@ def create_demographic_subgroup_names(age_ranges, cohort_locations):
     # Sex group names
     sex_names = {0: 'M', 1: 'F'}
     
-    # Location names
-    location_names = {i: loc for i, loc in enumerate(cohort_locations[0])}
+    # Location names. ``extract_cohort_features`` returns a flat list of category
+    # names; a nested single-element list is also accepted for backwards
+    # compatibility. Indexing ``cohort_locations[0]`` unconditionally would iterate
+    # the characters of the first cohort name when given the flat form.
+    if len(cohort_locations) > 0 and isinstance(cohort_locations[0], (list, tuple, np.ndarray)):
+        flat_locations = list(cohort_locations[0])
+    else:
+        flat_locations = list(cohort_locations)
+    location_names = {i: loc for i, loc in enumerate(flat_locations)}
+    # Rows whose cohort was unseen by the encoder (the held-out cohort under
+    # handle_unknown='ignore') carry an all-zero one-hot and are labelled
+    # explicitly rather than being folded into the first training cohort.
+    location_names[UNKNOWN_COHORT_INDEX] = UNKNOWN_COHORT_LABEL
     
     return {
         'age': age_names,

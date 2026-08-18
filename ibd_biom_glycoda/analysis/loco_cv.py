@@ -16,7 +16,11 @@ from sklearn.utils import Bunch
 from threadpoolctl import threadpool_limits
 
 from ibd_biom_glycoda.utils import seed_everything, get_safe_index
-from ibd_biom_glycoda.data.dataset import prepare_loco_data
+from ibd_biom_glycoda.data.dataset import (
+    prepare_loco_data,
+    cohort_index_from_onehot,
+    UNKNOWN_COHORT_INDEX,
+)
 from ibd_biom_glycoda.analysis.pipelines import (
     make_estimators,
     preprocess_fold_data,
@@ -97,7 +101,14 @@ def create_group_identifiers(V, Z_bin, age_ranges):
         Z_bin = np.asarray(Z_bin)
     
     # Extract cohort index from one-hot encoding
-    cohort_idx = np.argmax(V, axis=1)
+    cohort_idx = cohort_index_from_onehot(V)
+    if np.any(cohort_idx == UNKNOWN_COHORT_INDEX):
+        raise ValueError(
+            "create_group_identifiers received rows with an all-zero cohort one-hot. "
+            "These are samples from a cohort the encoder never saw (typically the "
+            "held-out cohort); grouping them would silently merge them into the "
+            "first training cohort."
+        )
     n_cohorts = V.shape[1]
     
     # Extract demographics from Z_bin
@@ -1060,7 +1071,7 @@ def _subgroup_labels_for_var(subgroup_var, Z_bin, V):
     if subgroup_var == 'sex':
         return Z_bin[:, 0]
     if subgroup_var == 'location':
-        return np.argmax(V, axis=1)
+        return cohort_index_from_onehot(V)
     raise ValueError(f"Unsupported subgroup_var '{subgroup_var}' for label extraction.")
 
 

@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
+from ibd_biom_glycoda.data.dataset import cohort_index_from_onehot
 from ibd_biom_glycoda.evaluation.metrics import compute_scoring_metrics, is_lower_better
 
 DEFAULT_SUBGROUP_METRICS = ['AUROC', 'LogLoss', 'Brier', 'Sensitivity', 'Specificity']
@@ -79,13 +80,13 @@ def create_subgroup_metrics_dict(
         },
         'location': {
             'train': calculate_subgroup_performance(np.array(y_train_true), np.array(y_train_pred), 
-                                                   np.argmax(V_train, axis=1), group_name='location', subgroup_names=location_names),
+                                                   cohort_index_from_onehot(V_train), group_name='location', subgroup_names=location_names),
             'val_in': calculate_subgroup_performance(np.array(y_val_in_true), np.array(y_val_in_pred), 
-                                                   np.argmax(V_val_in, axis=1), group_name='location', subgroup_names=location_names),
+                                                   cohort_index_from_onehot(V_val_in), group_name='location', subgroup_names=location_names),
             'test_in': calculate_subgroup_performance(np.array(y_test_in_true), np.array(y_test_in_pred), 
-                                                   np.argmax(V_test_in, axis=1), group_name='location', subgroup_names=location_names),
+                                                   cohort_index_from_onehot(V_test_in), group_name='location', subgroup_names=location_names),
             'test_out': calculate_subgroup_performance(np.array(y_test_out_true), np.array(y_test_out_pred), 
-                                                    np.argmax(V_test_out, axis=1), group_name='location', subgroup_names=location_names)
+                                                    cohort_index_from_onehot(V_test_out), group_name='location', subgroup_names=location_names)
         },
         'age_sex': {
             'train': calculate_intersection_performance(np.array(y_train_true), np.array(y_train_pred), 

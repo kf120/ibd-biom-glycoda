@@ -281,6 +281,38 @@ def extract_glycan_age(df):
     return df['GlycanAge'].copy()
 
 
+# ``OneHotEncoder(handle_unknown='ignore')`` encodes an unseen category as an
+# all-zero row. Under LOCO the encoder is fitted on the training cohorts only, so
+# every held-out participant arrives that way.
+UNKNOWN_COHORT_INDEX = -1
+UNKNOWN_COHORT_LABEL = 'Unencoded cohort'
+
+
+def cohort_index_from_onehot(V):
+    """Decode a one-hot cohort matrix into integer cohort indices.
+
+    A bare ``argmax`` returns 0 for an all-zero row and would silently label
+    every held-out participant as the first training cohort. Those rows are
+    returned as ``UNKNOWN_COHORT_INDEX`` instead.
+
+    Parameters
+    ----------
+    V : array-like, shape (n_samples, n_cohorts)
+        One-hot encoded cohort indicators.
+
+    Returns
+    -------
+    ndarray
+        Cohort index per sample, ``UNKNOWN_COHORT_INDEX`` where no category was
+        encoded.
+    """
+    V = V.values if hasattr(V, 'values') else np.asarray(V)
+    if V.ndim != 2:
+        raise ValueError(f"Expected a 2-D one-hot cohort matrix, got shape {V.shape}.")
+    idx = np.argmax(V, axis=1)
+    return np.where(np.asarray(V).sum(axis=1) == 0, UNKNOWN_COHORT_INDEX, idx)
+
+
 def extract_cohort_features(df, ohe_cohort=None, fit=False):
     """
     One-hot encode cohort information.
