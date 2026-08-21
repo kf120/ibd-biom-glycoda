@@ -415,15 +415,15 @@ wheels = [
 
 [[package]]
 name = "glycorender"
-version = "0.2.3"
+version = "0.2.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pillow" },
     { name = "reportlab" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c9/17/bf6eb1dd48e93764c6c00025cd5aa97a85253a0aac6653d3f0d17f3d9691/glycorender-0.2.3.tar.gz", hash = "sha256:278638c5c88f813c74c9e21cfe219c4e6e13bbd10bf79165dc31f78ef549eaf7", size = 123028, upload-time = "2025-11-06T13:22:25.32Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/48/e5/ecae0b9cc7aec89899064e4aa55b9ba3c14434896bb6a3afbefa140e3fad/glycorender-0.2.5.tar.gz", hash = "sha256:9af84c22e8a39f3f9fe4b15ccad20123b584e5d75cf82f3b089fc0ccaaa29333", size = 123299, upload-time = "2026-02-05T14:07:25.911Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/6f/30e9c01eb7b03505d158ae926dfa29ee29052600afc3092a2f63dd09c4e7/glycorender-0.2.3-py3-none-any.whl", hash = "sha256:f1709c511b6334cda51166e18184be274e9ec8f3145b27009945cdf9dc47ab60", size = 121092, upload-time = "2025-11-06T13:22:24.091Z" },
+    { url = "https://files.pythonhosted.org/packages/49/2d/cd7ae6e2655760eec8612ed39981f4a74d977e635358045e204c5c13b387/glycorender-0.2.5-py3-none-any.whl", hash = "sha256:f84106cca2a42052981b1a1fe8baa2c7655cdcb44de40a75b30af16750899ec5", size = 121329, upload-time = "2026-02-05T14:07:24.803Z" },
 ]
 
 [package.optional-dependencies]
@@ -433,7 +433,7 @@ png = [
 
 [[package]]
 name = "glycowork"
-version = "1.6.4"
+version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bokeh" },
@@ -452,9 +452,9 @@ dependencies = [
     { name = "setuptools" },
     { name = "statsmodels" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1a/e5/8d008e44a1393554cd0f8beb3dc9fa2e341b89a1a283428f03afad5d21d1/glycowork-1.6.4.tar.gz", hash = "sha256:c0d73175e7917411063132f0e1fc732091d4a0f2bfe79cda6620f79dff3cd70a", size = 8819474, upload-time = "2025-10-01T09:37:04.783Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/31/d5/9d655cfdea3834b942801be0eb7150225f8e9ef399e97e6534a435b18cd0/glycowork-1.9.0.tar.gz", hash = "sha256:26e7cf1879400e6ade7f0c5888e0c6e63b9e61d26b8598e89ea02ee572fdc006", size = 9011311, upload-time = "2026-06-16T11:00:03.411Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/32/65/79de894746ea6c155daf64d11611bd3579574ed46ff97892fcfd3efefefa/glycowork-1.6.4-py3-none-any.whl", hash = "sha256:a805bfb5d6538ccb32f829ad0cf19eed23ce84e4848d696584142e1519d95443", size = 9069205, upload-time = "2025-10-01T09:37:00.881Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/ca/57042bc9a1434f88a5548786d9819e912d458fc4fff04dc327de0c5221ba/glycowork-1.9.0-py3-none-any.whl", hash = "sha256:7fcb9723feed64dc2cc1e0e1dad49e50cbddd58a93446506b1173cbae9e06ee4", size = 9261749, upload-time = "2026-06-16T10:59:51.868Z" },
 ]
 
 [[package]]
@@ -561,7 +561,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "adjusttext", specifier = ">=1.3.0" },
-    { name = "glycowork", specifier = ">=1.6.4" },
+    { name = "glycowork", specifier = ">=1.9.0" },
     { name = "ipykernel", specifier = ">=7.1.0" },
     { name = "pip", specifier = ">=25.3" },
     { name = "pytest", specifier = ">=9.1.1" },
