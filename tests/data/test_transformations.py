@@ -31,6 +31,16 @@ def toy_df():
 
 
 class TestCLRProcessorFit:
+    def test_random_state_interface_matches_legacy_seed(self, toy_df):
+        by_random_state = tf.apply_clr_transformation(
+            toy_df,
+            gamma=0.0,
+            random_state=17,
+        )
+        by_seed = tf.apply_clr_transformation(toy_df, gamma=0.0, seed=17)
+
+        pd.testing.assert_frame_equal(by_random_state, by_seed)
+
     def test_fit_does_not_run_a_clr_pass(self, monkeypatch, toy_df):
         def _boom(*args, **kwargs):
             raise AssertionError("fit() should not run a CLR pass")
