@@ -1,16 +1,13 @@
-# -*- coding: utf-8 -*-
 """
 @author: Konstantinos Flevaris
 """
+import glycowork.glycan_data.stats as glwstats
 import numpy as np
 import pandas as pd
-import glycowork.glycan_data.stats as glwstats
-
 from scipy.stats import mstats
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
-
 
 # Cached glycomotif tables keyed by source files and data directory.
 _GLYCOMPARE_EXCEL_CACHE = {}
@@ -127,7 +124,12 @@ def apply_winsorization(df, col_names, trim_frac=0.05, return_stats=True):
         return df2, clip_stats
     return df2
 
-def residualize_coda(X_trans, metadata_df, covariates=['Age','Sex'], alpha=1.0):
+def residualize_coda(
+    X_trans: pd.DataFrame,
+    metadata_df: pd.DataFrame,
+    covariates: list[str] | None = None,
+    alpha: float = 1.0,
+) -> pd.DataFrame:
     """
     Remove covariate effects from transformed compositional data using Ridge regression.
     
@@ -137,7 +139,7 @@ def residualize_coda(X_trans, metadata_df, covariates=['Age','Sex'], alpha=1.0):
         Transformed compositional data matrix.
     metadata_df : pd.DataFrame
         Metadata containing covariate information.
-    covariates : list, default=['Age','Sex']
+    covariates : list, optional
         List of covariate column names to residualize against.
     alpha : float, default=1.0
         Ridge regression regularization parameter.
@@ -147,7 +149,8 @@ def residualize_coda(X_trans, metadata_df, covariates=['Age','Sex'], alpha=1.0):
     pd.DataFrame
         Residualized data with covariate effects removed.
     """
-    cov = metadata_df.loc[X_trans.index, covariates].copy()
+    selected_covariates = ["Age", "Sex"] if covariates is None else covariates
+    cov = metadata_df.loc[X_trans.index, selected_covariates].copy()
     cov = pd.get_dummies(cov, drop_first=True)
     scaler = StandardScaler()
     X_cov = scaler.fit_transform(cov)
@@ -159,13 +162,28 @@ def residualize_coda(X_trans, metadata_df, covariates=['Age','Sex'], alpha=1.0):
     resid = X_trans.values - Y_hat
     return pd.DataFrame(resid, index=X_trans.index, columns=X_trans.columns)
 
-def apply_clr_transformation(df, group1=None, group2=None, gamma=0.1, custom_scale=0, seed=42):
-    '''
-    Apply the CLR transformation using the glycowork package.
-    '''
+def apply_clr_transformation(
+    df: pd.DataFrame,
+    group1: list[str] | pd.Index | None = None,
+    group2: list[str] | pd.Index | None = None,
+    gamma: float = 0.1,
+    custom_scale: object = 0,
+    random_state: int = 42,
+    *,
+    seed: int | None = None,
+) -> pd.DataFrame:
+    """Apply the glycowork CLR transformation reproducibly.
 
-    glwstats.rng = np.random.default_rng(seed)
-    np.random.seed(seed)  # in case they use legacy RNG
+    ``seed`` remains as a backwards-compatible alias for ``random_state``.
+    New analysis code should use the explicit ``random_state`` interface.
+    """
+    if seed is not None:
+        if random_state != 42 and random_state != seed:
+            raise ValueError("random_state and seed specify different values")
+        random_state = seed
+
+    glwstats.rng = np.random.default_rng(random_state)
+    np.random.seed(random_state)  # in case they use legacy RNG
 
     # Transpose so that rows are glycans (features) and columns are samples.
     df_transposed = df.T
